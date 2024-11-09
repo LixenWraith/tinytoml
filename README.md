@@ -1,6 +1,7 @@
 # tinytoml
 
 Package tinytoml provides a minimal TOML parser and encoder for configuration files.
+Similar interface to encoding/json.
 
 Supported Features:
 - Basic types: string, number (int/float), boolean
@@ -22,3 +23,8 @@ Limitations:
 - No support for hex/octal/binary number formats
 - No scientific notation support for numbers
 - Unquoted strings cannot contain whitespace (use quotes)
+
+## Installation and use
+
+Follow the example in src/cmd/main.go
+Run build.sh bash script to build the example program and run the tests (linux).

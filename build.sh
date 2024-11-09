@@ -1,0 +1,3 @@
+#1/usr/bin/bash
+go build -o ./bin/tinytoml ./src/cmd/main.go
+go test ./...

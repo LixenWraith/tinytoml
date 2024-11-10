@@ -1,4 +1,4 @@
-// File: /tinytoml/src/pkg/tinytoml/marshal.go
+// File: /tinytoml/marshal.go
 
 package tinytoml
 

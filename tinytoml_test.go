@@ -1,4 +1,4 @@
-// File: tinytoml/src/pkg/tinytomll/tinytoml_test.go
+// File: tinytoml/tinytoml_test.go
 
 package tinytoml
 

@@ -1,4 +1,4 @@
-// File: /tinytoml/src/pkg/tinytoml/tinytoml.go
+// File: /tinytoml/tinytoml.go
 
 /*
 Package tinytoml provides a minimal TOML parser and encoder for configuration files.

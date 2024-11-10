@@ -1,4 +1,4 @@
-// File: tintomy/src/cmd/main.go
+// File: tintomy/example/main.go
 
 package main
 
@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"tinytoml/src/pkg/tinytoml"
+	"github.com/LixenWraith/tinytoml"
 )
 
 type Config struct {

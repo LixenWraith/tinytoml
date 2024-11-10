@@ -498,7 +498,7 @@ func TestErrorCases(t *testing.T) {
 			config: &struct {
 				Arr []int `toml:"arr"`
 			}{},
-			wantErr: "array element must be number",
+			wantErr: "value is not a number",
 		},
 		{
 			name:  "invalid float format",

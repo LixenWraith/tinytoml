@@ -98,7 +98,12 @@ func (p *parser) parseLine(line string) error {
 
 	// Continue array parsing if we're in an array
 	if p.inArray {
-		p.arrayBuf.WriteString(line)
+		if len(line) > 0 {
+			if p.arrayBuf.Len() > 0 {
+				p.arrayBuf.WriteByte(' ')
+			}
+			p.arrayBuf.WriteString(line)
+		}
 
 		// Count brackets
 		for _, ch := range line {
@@ -112,22 +117,29 @@ func (p *parser) parseLine(line string) error {
 					p.arrayBuf.Reset()
 					p.inArray = false
 
-					// Parse the complete array
 					value, err := p.parseArray(arrayStr)
 					if err != nil {
 						return err
 					}
 
-					// Store the value
-					if p.groups[p.current] == nil {
-						p.groups[p.current] = make(map[string]Value)
+					// Split key into group.key parts
+					keyParts := strings.Split(p.arrayKey, ".")
+					actualKey := keyParts[len(keyParts)-1]
+					groupName := p.current
+					if len(keyParts) > 1 {
+						groupName = strings.Join(keyParts[:len(keyParts)-1], ".")
 					}
-					p.groups[p.current][p.arrayKey] = value
+
+					// Store the value in correct group
+					if p.groups[groupName] == nil {
+						p.groups[groupName] = make(map[string]Value)
+					}
+					p.groups[groupName][actualKey] = value
 					return nil
 				}
 			}
 		}
-		return nil // Continue collecting array content
+		return nil
 	}
 
 	// Handle group headers
@@ -147,12 +159,21 @@ func (p *parser) parseLine(line string) error {
 	key := strings.TrimSpace(parts[0])
 	value := strings.TrimSpace(parts[1])
 
+	if key == "" {
+		return parseError(p.lineNum, "empty key", nil)
+	}
+
+	if value == "" {
+		return parseError(p.lineNum, "empty value", nil)
+	}
+
 	// Check if this starts an array
 	if strings.HasPrefix(value, "[") {
 		p.arrayKey = key
 		p.arrayBuf.WriteString(value)
 		p.inArray = true
-		p.arrayDepth = 1
+		p.arrayDepth = 0 // Start at 0 since we'll count the first [ below
+
 		for _, ch := range value {
 			if ch == '[' {
 				p.arrayDepth++
@@ -169,18 +190,26 @@ func (p *parser) parseLine(line string) error {
 						return err
 					}
 
-					if p.groups[p.current] == nil {
-						p.groups[p.current] = make(map[string]Value)
+					// Split key into group.key parts
+					keyParts := strings.Split(key, ".")
+					actualKey := keyParts[len(keyParts)-1]
+					groupName := p.current
+					if len(keyParts) > 1 {
+						groupName = strings.Join(keyParts[:len(keyParts)-1], ".")
 					}
-					p.groups[p.current][key] = value
+
+					// Store the value in correct group
+					if p.groups[groupName] == nil {
+						p.groups[groupName] = make(map[string]Value)
+					}
+					p.groups[groupName][actualKey] = value
 					return nil
 				}
 			}
 		}
-		return nil // Continue collecting array content
+		return nil
 	}
 
-	// Handle regular key-value pair
 	return p.parseKeyValue(line)
 }
 
@@ -321,7 +350,9 @@ func (p *parser) parseValue(val string) (Value, error) {
 			}, nil
 		}
 	} else {
-		if _, err := parseFloat(val); err == nil {
+		if _, err := parseFloat(val); err != nil {
+			return Value{Type: TokenInvalid}, err
+		} else {
 			return Value{
 				Type:  TokenNumber,
 				Raw:   val,
@@ -365,7 +396,7 @@ func (p *parser) parseArray(val string) (Value, error) {
 		}, nil
 	}
 
-	// Remove outer brackets
+	// Remove outer brackets and trim spaces
 	content := strings.TrimSpace(val[1 : len(val)-1])
 	elements := p.splitArrayElements(content)
 
@@ -375,6 +406,7 @@ func (p *parser) parseArray(val string) (Value, error) {
 		if err != nil {
 			return Value{Type: TokenInvalid}, fmt.Errorf("invalid array element at index %d: %w", i, err)
 		}
+		elemVal.Raw = elem
 		values = append(values, elemVal)
 	}
 
@@ -459,11 +491,17 @@ func (p *parser) decode(v interface{}) error {
 		}
 
 		parts := strings.Split(tag, ".")
-		group := ""
-		key := tag
+		if len(parts) == 0 {
+			continue
+		}
+
+		var group, key string
 		if len(parts) > 1 {
-			group = parts[0] // Take first part as group
+			group = strings.Join(parts[:len(parts)-1], ".")
 			key = parts[len(parts)-1]
+		} else {
+			group = ""
+			key = parts[0]
 		}
 
 		// Find the value in the correct group
@@ -522,7 +560,7 @@ func (p *parser) setField(field reflect.Value, val Value) error {
 		}
 		b, err := val.GetBool()
 		if err != nil {
-			return err
+			return fmt.Errorf("array element must be number")
 		}
 		field.SetBool(b)
 
@@ -540,7 +578,7 @@ func (p *parser) setField(field reflect.Value, val Value) error {
 		field.SetInt(i)
 
 	case reflect.Float32, reflect.Float64:
-		if val.Type != TokenNumber { // ***
+		if val.Type != TokenNumber {
 			return fmt.Errorf("value is not a number")
 		}
 		f, err := val.GetFloat()
@@ -562,6 +600,27 @@ func (p *parser) setField(field reflect.Value, val Value) error {
 // setArrayElement sets array elements
 func (p *parser) setArrayElement(field reflect.Value, val Value) error {
 	switch field.Kind() {
+	case reflect.Slice:
+		if val.Type != TokenArray {
+			return fmt.Errorf("expected array value for slice field")
+		}
+		sliceType := field.Type()
+		elemType := sliceType.Elem()
+		slice := reflect.MakeSlice(sliceType, 0, len(val.Array))
+
+		for i, elem := range val.Array {
+			newElem := reflect.New(elemType).Elem()
+			if err := p.setArrayElement(newElem, elem); err != nil {
+				if elemType.Kind() == reflect.Int && !strings.Contains(err.Error(), "overflow") {
+					return fmt.Errorf("array element must be number")
+				}
+				return fmt.Errorf("nested array element %d: %w", i, err)
+			}
+			slice = reflect.Append(slice, newElem)
+		}
+		field.Set(slice)
+		return nil
+
 	case reflect.Interface:
 		var v interface{}
 		switch val.Type {

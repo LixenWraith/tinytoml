@@ -285,6 +285,11 @@ func parseInt(s string) (int64, error) {
 
 // parseFloat is a helper to parse float values with format validation
 func parseFloat(s string) (float64, error) {
+	// Special check for invalid format like "123."
+	if strings.HasSuffix(s, ".") {
+		return 0, fmt.Errorf("invalid float format")
+	}
+
 	var intPart int64
 	var fracPart int64
 	var fracDiv float64 = 1

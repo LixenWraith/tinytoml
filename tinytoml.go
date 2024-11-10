@@ -5,7 +5,9 @@ Package tinytoml provides a minimal TOML parser and encoder for configuration fi
 
 Supported Features:
 - Basic types: string, number (int/float), boolean
-- Table/group nesting up to 3 levels
+- Arrays with mixed types
+- Nested arrays
+- Unlimited table/group nesting
 - Single-line string values with escape sequences (\, \", \', \t)
 - Both inline (#) and full-line comments
 - Flexible whitespace around equals sign and line start
@@ -15,10 +17,8 @@ Supported Features:
 - Duplicate key detection (first occurrence used)
 
 Limitations:
-- No array/slice support
 - No multi-line string support
 - Limited escape sequence support (only \, \", \', \t)
-- Maximum 3 levels of table/group nesting
 - No support for custom time formats
 - No support for hex/octal/binary number formats
 - No scientific notation support for numbers
@@ -41,18 +41,15 @@ const (
 	TokenString
 	TokenNumber
 	TokenBool
-	TokenGroup
-	TokenKey
+	TokenArray
 )
-
-// maxNestingLevel defines maximum allowed table/group nesting
-const maxNestingLevel = 3
 
 // Value represents a TOML value with type information
 type Value struct {
 	Type  TokenType // Type of the value
 	Raw   string    // Raw string representation
 	Group string    // Group this value belongs to
+	Array []Value   // Array elements if Type is TokenArray
 }
 
 // ParseError represents a TOML parsing error with line information
@@ -86,7 +83,7 @@ func (e *ParseError) Unwrap() error {
 
 // GetString returns string value with validation
 func (v *Value) GetString() (string, error) {
-	if v.Type != TokenString && v.Type != TokenKey {
+	if v.Type != TokenString {
 		return "", fmt.Errorf("value is not a string")
 	}
 	return unescapeString(v.Raw)
@@ -121,6 +118,14 @@ func (v *Value) GetFloat() (float64, error) {
 		return 0, fmt.Errorf("value is not a number")
 	}
 	return parseFloat(v.Raw)
+}
+
+// GetArray returns array value with validation
+func (v *Value) GetArray() ([]Value, error) {
+	if v.Type != TokenArray {
+		return nil, fmt.Errorf("value is not an array")
+	}
+	return v.Array, nil
 }
 
 // parseError creates a new ParseError

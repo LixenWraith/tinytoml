@@ -30,7 +30,6 @@ func Marshal(v interface{}) ([]byte, error) {
 
 	m := &marshaler{
 		groups: make(map[string]map[string]string),
-		depth:  0,
 	}
 
 	if err := m.marshalStruct(val); err != nil {
@@ -43,7 +42,6 @@ func Marshal(v interface{}) ([]byte, error) {
 // marshaler holds marshaling state
 type marshaler struct {
 	groups map[string]map[string]string
-	depth  int
 }
 
 // marshalStruct processes a struct value
@@ -68,13 +66,12 @@ func (m *marshaler) marshalStruct(val reflect.Value) error {
 			key = tag[idx+1:]
 		}
 
-		parts := strings.Split(group, ".")
-		if len(parts) > maxNestingLevel {
-			return fmt.Errorf("field %s: group nesting exceeds maximum depth of %d", fieldType.Name, maxNestingLevel)
-		}
-		for _, part := range parts {
-			if part != "" && !isValidKey(part) {
-				return fmt.Errorf("field %s: invalid group name: %s", fieldType.Name, part)
+		// Validate group and key names
+		if group != "" {
+			for _, part := range strings.Split(group, ".") {
+				if !isValidKey(part) {
+					return fmt.Errorf("field %s: invalid group name: %s", fieldType.Name, part)
+				}
 			}
 		}
 		if !isValidKey(key) {
@@ -133,9 +130,36 @@ func (m *marshaler) marshalValue(v reflect.Value) (string, error) {
 		}
 		return s, nil
 
+	case reflect.Slice:
+		return m.marshalArray(v)
+
+	case reflect.Interface:
+		if v.IsNil() {
+			return "null", nil
+		}
+		return m.marshalValue(v.Elem())
+
 	default:
 		return "", fmt.Errorf("unsupported type: %v", v.Type())
 	}
+}
+
+// marshalArray marshals arrays
+func (m *marshaler) marshalArray(v reflect.Value) (string, error) {
+	if v.Len() == 0 {
+		return "[]", nil
+	}
+
+	var elements []string
+	for i := 0; i < v.Len(); i++ {
+		elem, err := m.marshalValue(v.Index(i))
+		if err != nil {
+			return "", fmt.Errorf("array element %d: %w", i, err)
+		}
+		elements = append(elements, elem)
+	}
+
+	return fmt.Sprintf("[%s]", strings.Join(elements, ", ")), nil
 }
 
 // isASCII checks if string contains non-ASCII characters
@@ -179,11 +203,6 @@ func (m *marshaler) encode() ([]byte, error) {
 		}
 		isFirst = false
 
-		parts := strings.Split(group, ".")
-		if len(parts) > maxNestingLevel {
-			return nil, fmt.Errorf("group nesting exceeds maximum depth of %d: %s", maxNestingLevel, group)
-		}
-
 		buf.WriteString(fmt.Sprintf("[%s]\n", group))
 		if err := m.writeGroup(&buf, group, m.groups[group]); err != nil {
 			return nil, err
@@ -214,7 +233,6 @@ func (m *marshaler) writeGroup(buf *bytes.Buffer, group string, values map[strin
 	return nil
 }
 
-// MarshalIndent is like Marshal but applies consistent formatting
 func MarshalIndent(v interface{}) ([]byte, error) {
 	data, err := Marshal(v)
 	if err != nil {
@@ -229,6 +247,7 @@ func MarshalIndent(v interface{}) ([]byte, error) {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
+		// Add newline before groups
 		if strings.HasPrefix(trimmed, "[") {
 			if inGroup {
 				buf.WriteByte('\n')
@@ -236,7 +255,31 @@ func MarshalIndent(v interface{}) ([]byte, error) {
 			inGroup = true
 		}
 
-		buf.WriteString(line)
+		// Format arrays for better readability
+		if strings.Contains(line, "[") && strings.Contains(line, "]") && strings.Contains(line, ",") {
+			key := line[:strings.Index(line, "=")+1]
+			arrayPart := strings.TrimSpace(line[strings.Index(line, "=")+1:])
+
+			// Only format if it's a non-empty array
+			if len(arrayPart) > 2 { // more than just "[]"
+				elements := splitForIndent(arrayPart[1 : len(arrayPart)-1])
+				buf.WriteString(key)
+				buf.WriteString(" [\n")
+				for i, elem := range elements {
+					buf.WriteString("    ")
+					buf.WriteString(strings.TrimSpace(elem))
+					if i < len(elements)-1 {
+						buf.WriteString(",")
+					}
+					buf.WriteByte('\n')
+				}
+				buf.WriteString("]")
+			} else {
+				buf.WriteString(line)
+			}
+		} else {
+			buf.WriteString(line)
+		}
 		buf.WriteByte('\n')
 	}
 
@@ -245,4 +288,47 @@ func MarshalIndent(v interface{}) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// Helper function to split array elements for indentation
+func splitForIndent(s string) []string {
+	var result []string
+	var current strings.Builder
+	depth := 0
+	inQuotes := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch ch {
+		case '"':
+			if i == 0 || s[i-1] != '\\' {
+				inQuotes = !inQuotes
+			}
+			current.WriteByte(ch)
+		case '[':
+			if !inQuotes {
+				depth++
+			}
+			current.WriteByte(ch)
+		case ']':
+			if !inQuotes {
+				depth--
+			}
+			current.WriteByte(ch)
+		case ',':
+			if !inQuotes && depth == 0 {
+				result = append(result, current.String())
+				current.Reset()
+			} else {
+				current.WriteByte(ch)
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+	return result
 }

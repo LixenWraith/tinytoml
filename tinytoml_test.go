@@ -1,6 +1,7 @@
 package tinytoml
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -422,67 +423,78 @@ func TestErrorCases(t *testing.T) {
 		name    string
 		input   string
 		config  interface{}
-		wantErr string
+		wantErr error
+		wantMsg string
 	}{
 		{
 			name:    "nil pointer",
 			input:   "key = \"value\"",
 			config:  nil,
-			wantErr: "decode target must be a non-nil pointer",
+			wantErr: nil,
+			wantMsg: ErrInvalidTarget,
 		},
 		{
 			name:    "non-pointer",
 			input:   "key = \"value\"",
 			config:  struct{}{},
-			wantErr: "decode target must be a non-nil pointer",
+			wantErr: nil,
+			wantMsg: ErrInvalidTarget,
 		},
 		{
 			name:    "non-struct pointer",
 			input:   "key = \"value\"",
 			config:  new(string),
-			wantErr: "decode target must be a struct",
+			wantErr: nil,
+			wantMsg: ErrNotStruct,
 		},
 		{
 			name:    "invalid group format",
 			input:   "[invalid",
 			config:  &struct{}{},
-			wantErr: "invalid group format",
+			wantErr: nil,
+			wantMsg: ErrInvalidGroupFormat,
 		},
 		{
 			name:    "empty group name",
 			input:   "[]",
 			config:  &struct{}{},
-			wantErr: "empty group name",
+			wantErr: nil,
+			wantMsg: ErrEmptyGroup,
 		},
 		{
 			name:    "invalid key format",
 			input:   "invalid",
 			config:  &struct{}{},
-			wantErr: "invalid key-value format",
+			wantErr: nil,
+			wantMsg: ErrInvalidValueFormat,
 		},
 		{
 			name:    "empty value",
 			input:   "key = ",
 			config:  &struct{}{},
-			wantErr: "empty value",
+			wantErr: nil,
+			wantMsg: ErrEmptyValue,
 		},
 		{
 			name:    "unterminated string",
 			input:   "key = \"unterminated",
 			config:  &struct{}{},
-			wantErr: "invalid value format",
+			wantErr: nil,
+			wantMsg: ErrUnterminatedString,
 		},
 		{
 			name:    "invalid escape",
 			input:   "key = \"invalid\\x\"",
 			config:  &struct{}{},
-			wantErr: "invalid value format",
+			wantErr: nil,
+			wantMsg: ErrInvalidEscape,
 		},
 		{
 			name:    "unquoted string with space",
 			input:   "key = has space",
 			config:  &struct{}{},
-			wantErr: "unquoted value contains whitespace",
+			wantErr: nil,
+			wantMsg: ErrInvalidValueFormat,
 		},
 		{
 			name:  "integer overflow",
@@ -490,7 +502,8 @@ func TestErrorCases(t *testing.T) {
 			config: &struct {
 				Num int64 `toml:"num"`
 			}{},
-			wantErr: "integer overflow",
+			wantErr: nil,
+			wantMsg: ErrIntegerOverflow,
 		},
 		{
 			name:  "invalid array element",
@@ -498,7 +511,8 @@ func TestErrorCases(t *testing.T) {
 			config: &struct {
 				Arr []int `toml:"arr"`
 			}{},
-			wantErr: "value is not a number",
+			wantErr: nil,
+			wantMsg: ErrTypeMismatch,
 		},
 		{
 			name:  "invalid float format",
@@ -506,7 +520,8 @@ func TestErrorCases(t *testing.T) {
 			config: &struct {
 				Num float64 `toml:"num"`
 			}{},
-			wantErr: "invalid float format",
+			wantErr: nil,
+			wantMsg: ErrInvalidNumber,
 		},
 	}
 
@@ -516,8 +531,15 @@ func TestErrorCases(t *testing.T) {
 			if err == nil {
 				t.Fatal("Expected error but got nil")
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("Wrong error:\ngot:  %v\nwant: %v", err, tc.wantErr)
+
+			// Check if error message contains expected message
+			if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("Error message should contain %q, got: %v", tc.wantMsg, err)
+			}
+
+			// If we're expecting a specific error, check with errors.Is
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Errorf("Expected error %v, got %v", tc.wantErr, err)
 			}
 		})
 	}

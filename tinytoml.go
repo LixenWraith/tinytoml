@@ -33,6 +33,31 @@ import (
 	"unicode/utf8"
 )
 
+// Error constants for different error categories
+const (
+	// Syntax Errors
+	ErrInvalidKeyFormat   = "invalid key format"
+	ErrInvalidGroupFormat = "invalid group format"
+	ErrInvalidValueFormat = "invalid value format"
+	ErrUnterminatedString = "unterminated string"
+	ErrInvalidEscape      = "invalid escape sequence"
+
+	// Type Errors
+	ErrTypeMismatch    = "type mismatch"
+	ErrUnsupportedType = "unsupported type"
+
+	// Value Errors
+	ErrIntegerOverflow = "integer overflow"
+	ErrInvalidNumber   = "invalid number format"
+	ErrInvalidBoolean  = "invalid boolean value"
+	ErrEmptyValue      = "empty value"
+	ErrInvalidUTF8     = "invalid UTF-8 encoding"
+
+	// Structure Errors
+	ErrDuplicateKey = "duplicate key"
+	ErrMissingKey   = "missing key"
+)
+
 // TokenType represents the type of TOML value
 type TokenType int
 
@@ -52,47 +77,35 @@ type Value struct {
 	Array []Value   // Array elements if Type is TokenArray
 }
 
-// ParseError represents a TOML parsing error with line information
-type ParseError struct {
-	Line    int    // Line number where error occurred
-	Column  int    // Column number where error occurred
-	Message string // Error message
-	Context string // Context of the error (key/value/group)
-	Err     error  // Original error if any
+// wrapf adds function context to errors
+func wrapf(fn string, err error) error {
+	return fmt.Errorf("%s: %w", fn, err)
 }
 
-// Error implements error interface for ParseError
-func (e *ParseError) Error() string {
-	if e.Context != "" {
-		if e.Err != nil {
-			return fmt.Sprintf("line %d, col %d: %s in %s: %v", e.Line, e.Column, e.Message, e.Context, e.Err)
-		}
-		return fmt.Sprintf("line %d, col %d: %s in %s", e.Line, e.Column, e.Message, e.Context)
-	}
-
-	if e.Err != nil {
-		return fmt.Sprintf("line %d: %s: %v", e.Line, e.Message, e.Err)
-	}
-	return fmt.Sprintf("line %d: %s", e.Line, e.Message)
-}
-
-// Unwrap implements error unwrapping
-func (e *ParseError) Unwrap() error {
-	return e.Err
+// errorf creates new errors with function context
+func errorf(fn string, format string, args ...interface{}) error {
+	msg := fmt.Sprintf(format, args...)
+	return fmt.Errorf("%s: %s", fn, msg)
 }
 
 // GetString returns string value with validation
 func (v *Value) GetString() (string, error) {
+	const fn = "Value.GetString"
 	if v.Type != TokenString {
-		return "", fmt.Errorf("value is not a string")
+		return "", errorf(fn, ErrTypeMismatch)
 	}
-	return unescapeString(v.Raw)
+	val, err := unescapeString(v.Raw)
+	if err != nil {
+		return "", wrapf(fn, err)
+	}
+	return val, nil
 }
 
 // GetBool returns boolean value with validation
 func (v *Value) GetBool() (bool, error) {
+	const fn = "Value.GetBool"
 	if v.Type != TokenBool {
-		return false, fmt.Errorf("value is not a boolean")
+		return false, errorf(fn, ErrTypeMismatch)
 	}
 	switch v.Raw {
 	case "true":
@@ -100,41 +113,43 @@ func (v *Value) GetBool() (bool, error) {
 	case "false":
 		return false, nil
 	default:
-		return false, fmt.Errorf("invalid boolean value: %s", v.Raw)
+		return false, errorf(fn, ErrInvalidBoolean)
 	}
 }
 
 // GetInt returns integer value with validation and overflow checking
 func (v *Value) GetInt() (int64, error) {
+	const fn = "Value.GetInt"
 	if v.Type != TokenNumber {
-		return 0, fmt.Errorf("value is not a number")
+		return 0, errorf(fn, ErrTypeMismatch)
 	}
-	return parseInt(v.Raw)
+	val, err := parseInt(v.Raw)
+	if err != nil {
+		return 0, wrapf(fn, err)
+	}
+	return val, nil
 }
 
 // GetFloat returns float value with validation
 func (v *Value) GetFloat() (float64, error) {
+	const fn = "Value.GetFloat"
 	if v.Type != TokenNumber {
-		return 0, fmt.Errorf("value is not a number")
+		return 0, errorf(fn, ErrTypeMismatch)
 	}
-	return parseFloat(v.Raw)
+	val, err := parseFloat(v.Raw)
+	if err != nil {
+		return 0, wrapf(fn, err)
+	}
+	return val, nil
 }
 
 // GetArray returns array value with validation
 func (v *Value) GetArray() ([]Value, error) {
+	const fn = "Value.GetArray"
 	if v.Type != TokenArray {
-		return nil, fmt.Errorf("value is not an array")
+		return nil, errorf(fn, ErrTypeMismatch)
 	}
 	return v.Array, nil
-}
-
-// parseError creates a new ParseError
-func parseError(line int, msg string, err error) error {
-	return &ParseError{
-		Line:    line,
-		Message: msg,
-		Err:     err,
-	}
 }
 
 // isValidKey checks if a key name follows TOML specification
@@ -183,6 +198,8 @@ func isValidKeyChar(c byte) bool {
 
 // unescapeString handles basic string escape sequences
 func unescapeString(s string) (string, error) {
+	const fn = "unescapeString"
+
 	var result strings.Builder
 	escaped := false
 	isQuoted := false
@@ -199,7 +216,7 @@ func unescapeString(s string) (string, error) {
 		if r >= utf8.RuneSelf {
 			r, size = utf8.DecodeRuneInString(s[i:])
 			if r == utf8.RuneError {
-				return "", fmt.Errorf("invalid UTF-8 encoding")
+				return "", errorf(fn, ErrInvalidUTF8)
 			}
 		}
 
@@ -212,7 +229,7 @@ func unescapeString(s string) (string, error) {
 					result.WriteRune(r)
 				}
 			default:
-				return "", fmt.Errorf("invalid escape sequence: \\%c", r)
+				return "", errorf(fn, "%s: \\%c", ErrInvalidEscape, r)
 			}
 			escaped = false
 			i += size
@@ -232,7 +249,7 @@ func unescapeString(s string) (string, error) {
 	}
 
 	if escaped {
-		return "", fmt.Errorf("unterminated escape sequence")
+		return "", errorf(fn, ErrUnterminatedString)
 	}
 
 	return result.String(), nil
@@ -240,11 +257,13 @@ func unescapeString(s string) (string, error) {
 
 // parseInt is a helper to parse integer values with overflow checking
 func parseInt(s string) (int64, error) {
+	const fn = "parseInt"
+
 	var val int64
 	var neg bool
 
 	if len(s) == 0 {
-		return 0, fmt.Errorf("empty number")
+		return 0, errorf(fn, ErrEmptyValue)
 	}
 
 	// Handle negative numbers
@@ -256,12 +275,12 @@ func parseInt(s string) (int64, error) {
 	// Parse digits
 	for _, c := range s {
 		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("invalid integer: %s", s)
+			return 0, errorf(fn, "%s: %s", ErrInvalidNumber, s)
 		}
 
 		// Check for overflow
 		if val > (1<<63-1)/10 {
-			return 0, fmt.Errorf("integer overflow: %s", s)
+			return 0, errorf(fn, "%s: %s", ErrIntegerOverflow, s)
 		}
 
 		digit := int64(c - '0')
@@ -269,14 +288,14 @@ func parseInt(s string) (int64, error) {
 
 		// Check for overflow after addition
 		if val < 0 {
-			return 0, fmt.Errorf("integer overflow: %s", s)
+			return 0, errorf(fn, "%s: %s", ErrIntegerOverflow, s)
 		}
 	}
 
 	if neg {
 		val = -val
 		if val > 0 {
-			return 0, fmt.Errorf("integer overflow: %s", s)
+			return 0, errorf(fn, "%s: %s", ErrIntegerOverflow, s)
 		}
 	}
 
@@ -285,9 +304,11 @@ func parseInt(s string) (int64, error) {
 
 // parseFloat is a helper to parse float values with format validation
 func parseFloat(s string) (float64, error) {
+	const fn = "parseFloat"
+
 	// Special check for invalid format like "123."
 	if strings.HasSuffix(s, ".") {
-		return 0, fmt.Errorf("invalid float format")
+		return 0, errorf(fn, "%s: trailing decimal point", ErrInvalidNumber)
 	}
 
 	var intPart int64
@@ -296,7 +317,7 @@ func parseFloat(s string) (float64, error) {
 	var neg bool
 
 	if len(s) == 0 {
-		return 0, fmt.Errorf("empty number")
+		return 0, errorf(fn, ErrEmptyValue)
 	}
 
 	// Handle negative numbers
@@ -308,21 +329,21 @@ func parseFloat(s string) (float64, error) {
 	// Split on decimal point
 	parts := strings.Split(s, ".")
 	if len(parts) > 2 {
-		return 0, fmt.Errorf("invalid float: multiple decimal points in %s", s)
+		return 0, errorf(fn, "%s: multiple decimal points", ErrInvalidNumber)
 	}
 
 	// Parse integer part
 	var err error
 	intPart, err = parseInt(parts[0])
 	if err != nil {
-		return 0, fmt.Errorf("invalid float: %w", err)
+		return 0, wrapf(fn, err)
 	}
 
 	// Parse fractional part if exists
 	if len(parts) == 2 {
 		for _, c := range parts[1] {
 			if c < '0' || c > '9' {
-				return 0, fmt.Errorf("invalid float: non-digit in fractional part %s", s)
+				return 0, errorf(fn, "%s: invalid fractional part", ErrInvalidNumber)
 			}
 			fracPart = fracPart*10 + int64(c-'0')
 			fracDiv *= 10

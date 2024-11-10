@@ -14,18 +14,26 @@ import (
 	"unicode"
 )
 
+// Error constants for different error categories
+const (
+	ErrNilPointer    = "cannot marshal nil pointer"
+	ErrMarshalStruct = "marshal target must be a struct"
+)
+
 // Marshal converts a struct to TOML format
 func Marshal(v interface{}) ([]byte, error) {
+	const fn = "Marshal"
+
 	val := reflect.ValueOf(v)
 	if val.Kind() == reflect.Ptr {
 		if val.IsNil() {
-			return nil, fmt.Errorf("cannot marshal nil pointer")
+			return nil, errorf(fn, ErrNilPointer)
 		}
 		val = val.Elem()
 	}
 
 	if val.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("marshal target must be a struct")
+		return nil, errorf(fn, ErrMarshalStruct)
 	}
 
 	m := &marshaler{
@@ -33,7 +41,7 @@ func Marshal(v interface{}) ([]byte, error) {
 	}
 
 	if err := m.marshalStruct(val); err != nil {
-		return nil, err
+		return nil, wrapf(fn, err)
 	}
 
 	return m.encode()
@@ -46,6 +54,8 @@ type marshaler struct {
 
 // marshalStruct processes a struct value
 func (m *marshaler) marshalStruct(val reflect.Value) error {
+	const fn = "marshaler.marshalStruct"
+
 	typ := val.Type()
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
@@ -70,12 +80,12 @@ func (m *marshaler) marshalStruct(val reflect.Value) error {
 		if group != "" {
 			for _, part := range strings.Split(group, ".") {
 				if !isValidKey(part) {
-					return fmt.Errorf("field %s: invalid group name: %s", fieldType.Name, part)
+					return errorf(fn, "%s: group '%s'", ErrInvalidKeyFormat, part)
 				}
 			}
 		}
 		if !isValidKey(key) {
-			return fmt.Errorf("field %s: invalid key name: %s", fieldType.Name, key)
+			return errorf(fn, "%s: key '%s'", ErrInvalidKeyFormat, key)
 		}
 
 		if m.groups[group] == nil {
@@ -84,9 +94,12 @@ func (m *marshaler) marshalStruct(val reflect.Value) error {
 
 		str, err := m.marshalValue(field)
 		if err != nil {
-			return fmt.Errorf("field %s: %w", fieldType.Name, err)
+			return wrapf(fn, err)
 		}
 
+		if _, exists := m.groups[group][key]; exists {
+			return errorf(fn, "%s: '%s'", ErrDuplicateKey, key)
+		}
 		m.groups[group][key] = str
 	}
 
@@ -95,6 +108,8 @@ func (m *marshaler) marshalStruct(val reflect.Value) error {
 
 // marshalValue converts a reflect.Value to a TOML-compatible string
 func (m *marshaler) marshalValue(v reflect.Value) (string, error) {
+	const fn = "marshaler.marshalValue"
+
 	switch v.Kind() {
 	case reflect.String:
 		s := v.String()
@@ -118,7 +133,7 @@ func (m *marshaler) marshalValue(v reflect.Value) (string, error) {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i := v.Int()
 		if i > math.MaxInt64 || i < math.MinInt64 {
-			return "", fmt.Errorf("integer overflow")
+			return "", errorf(fn, ErrIntegerOverflow)
 		}
 		return strconv.FormatInt(i, 10), nil
 
@@ -140,12 +155,14 @@ func (m *marshaler) marshalValue(v reflect.Value) (string, error) {
 		return m.marshalValue(v.Elem())
 
 	default:
-		return "", fmt.Errorf("unsupported type: %v", v.Type())
+		return "", errorf(fn, "%s: %v", ErrUnsupportedType, v.Type())
 	}
 }
 
 // marshalArray marshals arrays
 func (m *marshaler) marshalArray(v reflect.Value) (string, error) {
+	const fn = "marshaler.marshalArray"
+
 	if v.Len() == 0 {
 		return "[]", nil
 	}
@@ -154,7 +171,7 @@ func (m *marshaler) marshalArray(v reflect.Value) (string, error) {
 	for i := 0; i < v.Len(); i++ {
 		elem, err := m.marshalValue(v.Index(i))
 		if err != nil {
-			return "", fmt.Errorf("array element %d: %w", i, err)
+			return "", wrapf(fn, err)
 		}
 		elements = append(elements, elem)
 	}
@@ -174,6 +191,8 @@ func isASCII(s string) bool {
 
 // encode produces the final TOML document
 func (m *marshaler) encode() ([]byte, error) {
+	const fn = "marshaler.encode"
+
 	var buf bytes.Buffer
 
 	// Get all groups and sort
@@ -185,8 +204,8 @@ func (m *marshaler) encode() ([]byte, error) {
 
 	// Handle root group first
 	if rootGroup, ok := m.groups[""]; ok && len(rootGroup) > 0 {
-		if err := m.writeGroup(&buf, "", rootGroup); err != nil {
-			return nil, err
+		if err := m.writeGroup(&buf, rootGroup); err != nil {
+			return nil, wrapf(fn, err)
 		}
 		buf.WriteByte('\n') // Add newline after root group
 	}
@@ -204,8 +223,8 @@ func (m *marshaler) encode() ([]byte, error) {
 		isFirst = false
 
 		buf.WriteString(fmt.Sprintf("[%s]\n", group))
-		if err := m.writeGroup(&buf, group, m.groups[group]); err != nil {
-			return nil, err
+		if err := m.writeGroup(&buf, m.groups[group]); err != nil {
+			return nil, wrapf(fn, err)
 		}
 	}
 
@@ -213,7 +232,9 @@ func (m *marshaler) encode() ([]byte, error) {
 }
 
 // writeGroup writes a group of key-value pairs
-func (m *marshaler) writeGroup(buf *bytes.Buffer, group string, values map[string]string) error {
+func (m *marshaler) writeGroup(buf *bytes.Buffer, values map[string]string) error {
+	const fn = "marshaler.writeGroup"
+
 	var keys []string
 	for key := range values {
 		keys = append(keys, key)
@@ -223,10 +244,10 @@ func (m *marshaler) writeGroup(buf *bytes.Buffer, group string, values map[strin
 	for _, key := range keys {
 		value := values[key]
 		if value == "" {
-			return fmt.Errorf("empty value for key: %s", key)
+			return errorf(fn, "%s: key '%s'", ErrEmptyValue, key)
 		}
 		if _, err := fmt.Fprintf(buf, "%s = %s\n", key, value); err != nil {
-			return err
+			return wrapf(fn, err)
 		}
 	}
 
@@ -234,9 +255,11 @@ func (m *marshaler) writeGroup(buf *bytes.Buffer, group string, values map[strin
 }
 
 func MarshalIndent(v interface{}) ([]byte, error) {
+	const fn = "MarshalIndent"
+
 	data, err := Marshal(v)
 	if err != nil {
-		return nil, err
+		return nil, wrapf(fn, err)
 	}
 
 	var buf bytes.Buffer
@@ -284,7 +307,7 @@ func MarshalIndent(v interface{}) ([]byte, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, wrapf(fn, err)
 	}
 
 	return buf.Bytes(), nil

@@ -246,29 +246,6 @@ func (p *parser) parseArray(val string) (any, error) {
 // parseArrayElements parses an array of elements into a typed slice.
 // It is a generic function that can handle different types (string, int64, float64, bool)
 // based on the provided converter function.
-//
-// Type parameter T represents the target type for array elements.
-//
-// Parameters:
-//   - elements: slice of string representations of array elements to parse
-//   - converter: function that converts a parsed any value to type T
-//     The converter returns the converted value and a boolean indicating success
-//
-// Returns:
-//   - []T: slice of parsed and type-converted elements
-//   - error: parsing or type conversion error with context
-//
-// The function ensures type consistency across all elements in the array
-// by applying the converter function to each element. If any element fails
-// to parse or convert to the target type, an error is returned with the
-// element index for context.
-//
-// Example usage:
-//
-//	strings, err := p.parseArrayElements(elements, func(v any) (string, bool) {
-//	    s, ok := v.(string)
-//	    return s, ok
-//	})
 func (p *parser) parseArrayElements(elements []string, firstElem any, elementType reflect.Type) (any, error) {
 	const fn = "parser.parseArrayElements"
 

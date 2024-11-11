@@ -64,7 +64,7 @@ port = 6379
 
 
     // Parse TOML into map
-    var config map[string]interface{}
+    var config map[string]any
     if err := tinytoml.Unmarshal([]byte(input), &config); err != nil {
         log.Fatal(err)
     }
@@ -93,9 +93,9 @@ port = 6379
 ### Implementation Choices
 
 - Keys must contain only ASCII letters, digits, underscore, and hyphen
-- String values must be quoted if they contain spcee or any of special characters ",#=[]"
+- String values must be quoted if they contain spcee or any of special characters `,#=[]`
 - String values can be unquoted if they contain only ASCII letters, digits, underscore, and hyphen
-- Escape sequences in strings: \", \t, \n, \r, \
+- Escape sequences in strings: `\", \t, \n, \r, \\`
 - Integers checked for int64 bounds
 - During Marshal, map[string]interface{} with no entries produces no output
 - MarshalIndent uses 4-space indentation for arrays
@@ -113,13 +113,13 @@ port = 6379
 
 ## API
 
-### `Unmarshal(data []byte, v interface{}) error`
+### `Unmarshal(data []byte, v any) error`
 Parses TOML data into a map[string]interface{}
 
-### `Marshal(v interface{}) ([]byte, error)`
+### `Marshal(v any) ([]byte, error)`
 Converts a Go value to TOML format
 
-### `MarshalIndent(v interface{}) ([]byte, error)`
+### `MarshalIndent(v any) ([]byte, error)`
 Like Marshal but adds consistent indentation for improved readability
 
 ## Error Handling

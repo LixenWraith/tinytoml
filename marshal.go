@@ -1,9 +1,6 @@
-// File: /tinytoml/marshal.go
-
 package tinytoml
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"math"
@@ -11,347 +8,313 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
-// Error constants for different error categories
-const (
-	ErrNilPointer    = "cannot marshal nil pointer"
-	ErrMarshalStruct = "marshal target must be a struct"
-)
-
-// Marshal converts a struct to TOML format
-func Marshal(v interface{}) ([]byte, error) {
+// Marshal converts a Go value to TOML format.
+// It supports basic types (string, int64, float64, bool),
+// homogeneous arrays, and nested maps representing tables.
+// Returns an error if the value cannot be marshaled according to TOML rules.
+func Marshal(v any) ([]byte, error) {
 	const fn = "Marshal"
-
-	val := reflect.ValueOf(v)
-	if val.Kind() == reflect.Ptr {
-		if val.IsNil() {
-			return nil, errorf(fn, ErrNilPointer)
-		}
-		val = val.Elem()
-	}
-
-	if val.Kind() != reflect.Struct {
-		return nil, errorf(fn, ErrMarshalStruct)
+	if v == nil {
+		return nil, errorf(fn, fmt.Errorf(errNilValue))
 	}
 
 	m := &marshaler{
-		groups: make(map[string]map[string]string),
+		buffer: &bytes.Buffer{},
 	}
 
-	if err := m.marshalStruct(val); err != nil {
-		return nil, wrapf(fn, err)
+	if err := m.marshalValue(reflect.ValueOf(v), nil); err != nil {
+		return nil, errorf(fn, err)
 	}
 
-	return m.encode()
+	return m.buffer.Bytes(), nil
 }
 
-// marshaler holds marshaling state
+// marshaler handles the TOML encoding process and maintains the output buffer.
 type marshaler struct {
-	groups map[string]map[string]string
+	buffer *bytes.Buffer
 }
 
-// marshalStruct processes a struct value
-func (m *marshaler) marshalStruct(val reflect.Value) error {
-	const fn = "marshaler.marshalStruct"
-
-	typ := val.Type()
-	for i := 0; i < val.NumField(); i++ {
-		field := val.Field(i)
-		fieldType := typ.Field(i)
-
-		if !fieldType.IsExported() {
-			continue
-		}
-
-		tag := fieldType.Tag.Get("toml")
-		if tag == "-" {
-			continue
-		}
-
-		group, key := "", tag
-		if idx := strings.Index(tag, "."); idx >= 0 {
-			group = tag[:idx]
-			key = tag[idx+1:]
-		}
-
-		// Validate group and key names
-		if group != "" {
-			for _, part := range strings.Split(group, ".") {
-				if !isValidKey(part) {
-					return errorf(fn, "%s: group '%s'", ErrInvalidKeyFormat, part)
-				}
-			}
-		}
-		if !isValidKey(key) {
-			return errorf(fn, "%s: key '%s'", ErrInvalidKeyFormat, key)
-		}
-
-		if m.groups[group] == nil {
-			m.groups[group] = make(map[string]string)
-		}
-
-		str, err := m.marshalValue(field)
-		if err != nil {
-			return wrapf(fn, err)
-		}
-
-		if _, exists := m.groups[group][key]; exists {
-			return errorf(fn, "%s: '%s'", ErrDuplicateKey, key)
-		}
-		m.groups[group][key] = str
-	}
-
-	return nil
-}
-
-// marshalValue converts a reflect.Value to a TOML-compatible string
-func (m *marshaler) marshalValue(v reflect.Value) (string, error) {
+// marshalValue handles top-level value dispatch based on type.
+// For maps, it maintains the table path context for proper TOML structure.
+// Other types are marshaled directly as values.
+func (m *marshaler) marshalValue(v reflect.Value, path []string) error {
 	const fn = "marshaler.marshalValue"
 
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
+	if v.Kind() == reflect.Map {
+		if err := m.marshalMap(v, path); err != nil {
+			return errorf(fn, err)
+		}
+		return nil
+	}
+
+	if err := m.marshal(v); err != nil {
+		return errorf(fn, err)
+	}
+	return nil
+}
+
+// marshal converts a single value to its TOML representation.
+// Handles basic types, arrays, and maps without table context.
+// Returns error for unsupported types or invalid values.
+func (m *marshaler) marshal(v reflect.Value) error {
+	const fn = "marshaler.marshal"
+
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
 	switch v.Kind() {
-	case reflect.String:
-		s := v.String()
-		needsQuotes := strings.ContainsAny(s, "\"\\\n\t '") ||
-			strings.Contains(s, "#") ||
-			!isASCII(s) ||
-			s == ""
-
-		if needsQuotes {
-			s = strings.ReplaceAll(s, "\\", "\\\\")
-			s = strings.ReplaceAll(s, "\"", "\\\"")
-			s = strings.ReplaceAll(s, "'", "\\'")
-			s = strings.ReplaceAll(s, "\t", "\\t")
-			return fmt.Sprintf("\"%s\"", s), nil
+	case reflect.Map:
+		// Maps without path context are treated as values
+		if err := m.marshalMap(v, nil); err != nil {
+			return errorf(fn, err)
 		}
-		return s, nil
-
-	case reflect.Bool:
-		return strconv.FormatBool(v.Bool()), nil
-
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i := v.Int()
-		if i > math.MaxInt64 || i < math.MinInt64 {
-			return "", errorf(fn, ErrIntegerOverflow)
-		}
-		return strconv.FormatInt(i, 10), nil
-
-	case reflect.Float32, reflect.Float64:
-		f := v.Float()
-		s := strconv.FormatFloat(f, 'f', -1, 64)
-		if !strings.Contains(s, ".") {
-			s += ".0"
-		}
-		return s, nil
-
 	case reflect.Slice:
-		return m.marshalArray(v)
-
+		if err := m.marshalArray(v); err != nil {
+			return errorf(fn, err)
+		}
+	case reflect.String:
+		if err := m.marshalString(v.String()); err != nil {
+			return errorf(fn, err)
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if err := m.marshalInt(v.Int()); err != nil {
+			return errorf(fn, err)
+		}
+	case reflect.Float32, reflect.Float64:
+		if err := m.marshalFloat(v.Float()); err != nil {
+			return errorf(fn, err)
+		}
+	case reflect.Bool:
+		if err := m.marshalBool(v.Bool()); err != nil {
+			return errorf(fn, err)
+		}
 	case reflect.Interface:
 		if v.IsNil() {
-			return "null", nil
+			return nil
 		}
-		return m.marshalValue(v.Elem())
-
+		if err := m.marshal(v.Elem()); err != nil {
+			return errorf(fn, err)
+		}
 	default:
-		return "", errorf(fn, "%s: %v", ErrUnsupportedType, v.Type())
+		return errorf(fn, fmt.Errorf(errUnsupported), v.Type().String())
 	}
+	return nil
 }
 
-// marshalArray marshals arrays
-func (m *marshaler) marshalArray(v reflect.Value) (string, error) {
-	const fn = "marshaler.marshalArray"
-
+// marshalMap converts a map to TOML format, handling both tables and key-value pairs.
+// For table context (non-nil path), it generates appropriate table headers.
+// Keys are processed in sorted order for consistent output.
+func (m *marshaler) marshalMap(v reflect.Value, path []string) error {
+	const fn = "marshaler.marshalMap"
 	if v.Len() == 0 {
-		return "[]", nil
+		return nil
 	}
 
-	var elements []string
-	for i := 0; i < v.Len(); i++ {
-		elem, err := m.marshalValue(v.Index(i))
-		if err != nil {
-			return "", wrapf(fn, err)
+	// Get and sort keys
+	keys := v.MapKeys()
+	sortedKeys := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if k.Kind() != reflect.String {
+			return errorf(fn, fmt.Errorf(errInvalidKey), "non-string key")
 		}
-		elements = append(elements, elem)
-	}
-
-	return fmt.Sprintf("[%s]", strings.Join(elements, ", ")), nil
-}
-
-// isASCII checks if string contains non-ASCII characters
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] > unicode.MaxASCII {
-			return false
+		key := k.String()
+		if !isValidKey(key) {
+			return errorf(fn, fmt.Errorf(errInvalidKey), key)
 		}
+		sortedKeys = append(sortedKeys, key)
 	}
-	return true
-}
+	sort.Strings(sortedKeys)
 
-// encode produces the final TOML document
-func (m *marshaler) encode() ([]byte, error) {
-	const fn = "marshaler.encode"
+	// Group by tables and basic key-values
+	tables := make(map[string]reflect.Value)
+	basicKVs := make(map[string]reflect.Value)
 
-	var buf bytes.Buffer
-
-	// Get all groups and sort
-	var groups []string
-	for group := range m.groups {
-		groups = append(groups, group)
-	}
-	sort.Strings(groups)
-
-	// Handle root group first
-	if rootGroup, ok := m.groups[""]; ok && len(rootGroup) > 0 {
-		if err := m.writeGroup(&buf, rootGroup); err != nil {
-			return nil, wrapf(fn, err)
+	for _, key := range sortedKeys {
+		value := v.MapIndex(reflect.ValueOf(key))
+		if value.Kind() == reflect.Interface {
+			value = value.Elem()
 		}
-		buf.WriteByte('\n') // Add newline after root group
-	}
-
-	// Write each group with proper spacing
-	isFirst := true
-	for _, group := range groups {
-		if group == "" {
+		if value.Kind() == reflect.Map {
+			tables[key] = value
 			continue
 		}
+		basicKVs[key] = value
+	}
 
-		if !isFirst {
-			buf.WriteByte('\n')
+	// Write table header only if there are values or it's a leaf table
+	if len(path) > 0 && (len(basicKVs) > 0 || len(tables) == 0) {
+		m.buffer.WriteString("[")
+		m.buffer.WriteString(strings.Join(path, "."))
+		m.buffer.WriteString("]\n")
+	}
+
+	// Write basic key-values
+	if len(basicKVs) > 0 {
+		for _, key := range sortedKeys {
+			if value, ok := basicKVs[key]; ok {
+				m.buffer.WriteString(key)
+				m.buffer.WriteString(" = ")
+				if err := m.marshalValue(value, nil); err != nil {
+					return errorf(fn, err, fmt.Sprintf("key: %s", key))
+				}
+				m.buffer.WriteByte('\n')
+			}
 		}
-		isFirst = false
-
-		buf.WriteString(fmt.Sprintf("[%s]\n", group))
-		if err := m.writeGroup(&buf, m.groups[group]); err != nil {
-			return nil, wrapf(fn, err)
+		// Add single newline after basic key-values if non-empty tables follow
+		if lenNotEmpty(tables) > 0 {
+			m.buffer.WriteByte('\n')
 		}
 	}
 
-	return buf.Bytes(), nil
-}
-
-// writeGroup writes a group of key-value pairs
-func (m *marshaler) writeGroup(buf *bytes.Buffer, values map[string]string) error {
-	const fn = "marshaler.writeGroup"
-
-	var keys []string
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		value := values[key]
-		if value == "" {
-			return errorf(fn, "%s: key '%s'", ErrEmptyValue, key)
-		}
-		if _, err := fmt.Fprintf(buf, "%s = %s\n", key, value); err != nil {
-			return wrapf(fn, err)
+	// Write tables
+	if lenNotEmpty(tables) > 0 {
+		// Process each table
+		first := true
+		for _, key := range sortedKeys {
+			if value, ok := tables[key]; ok {
+				if value.Len() == 0 {
+					continue // Skip empty tables
+				}
+				if !first {
+					// Only one newline between tables
+					m.buffer.WriteByte('\n')
+				}
+				first = false
+				newPath := append(path, key)
+				if err := m.marshalValue(value, newPath); err != nil {
+					return errorf(fn, err, fmt.Sprintf("table: %s", strings.Join(newPath, ".")))
+				}
+			}
 		}
 	}
 
 	return nil
 }
 
-func MarshalIndent(v interface{}) ([]byte, error) {
-	const fn = "MarshalIndent"
-
-	data, err := Marshal(v)
-	if err != nil {
-		return nil, wrapf(fn, err)
+// marshalArray converts a slice to TOML array format.
+// Verifies array homogeneity (all elements same type).
+// Empty arrays are encoded as [].
+func (m *marshaler) marshalArray(v reflect.Value) error {
+	const fn = "marshaler.marshalArray"
+	if v.Len() == 0 {
+		m.buffer.WriteString("[]")
+		return nil
 	}
 
-	var buf bytes.Buffer
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	inGroup := false
+	// Verify all elements are same type
+	elemType := v.Index(0).Type()
+	for i := 1; i < v.Len(); i++ {
+		if v.Index(i).Type() != elemType {
+			return errorf(fn, fmt.Errorf(errTypeMismatch), fmt.Sprintf("element %d", i))
+		}
+	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
+	m.buffer.WriteByte('[')
 
-		// Add newline before groups
-		if strings.HasPrefix(trimmed, "[") {
-			if inGroup {
-				buf.WriteByte('\n')
-			}
-			inGroup = true
+	for i := 0; i < v.Len(); i++ {
+		if i > 0 {
+			m.buffer.WriteString(", ")
 		}
 
-		// Format arrays for better readability
-		if strings.Contains(line, "[") && strings.Contains(line, "]") && strings.Contains(line, ",") {
-			key := line[:strings.Index(line, "=")+1]
-			arrayPart := strings.TrimSpace(line[strings.Index(line, "=")+1:])
-
-			// Only format if it's a non-empty array
-			if len(arrayPart) > 2 { // more than just "[]"
-				elements := splitForIndent(arrayPart[1 : len(arrayPart)-1])
-				buf.WriteString(key)
-				buf.WriteString(" [\n")
-				for i, elem := range elements {
-					buf.WriteString("    ")
-					buf.WriteString(strings.TrimSpace(elem))
-					if i < len(elements)-1 {
-						buf.WriteString(",")
-					}
-					buf.WriteByte('\n')
-				}
-				buf.WriteString("]")
-			} else {
-				buf.WriteString(line)
-			}
-		} else {
-			buf.WriteString(line)
+		if err := m.marshal(v.Index(i)); err != nil {
+			return errorf(fn, err, fmt.Sprintf("element %d", i))
 		}
-		buf.WriteByte('\n')
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, wrapf(fn, err)
-	}
-
-	return buf.Bytes(), nil
+	m.buffer.WriteByte(']')
+	return nil
 }
 
-// Helper function to split array elements for indentation
-func splitForIndent(s string) []string {
-	var result []string
-	var current strings.Builder
-	depth := 0
-	inQuotes := false
+// marshalString converts a string to TOML format.
+// Adds quotes and escapes special characters when necessary.
+// Bare strings are used when possible for better readability.
+func (m *marshaler) marshalString(s string) error {
+	// Quote strings that:
+	// - are empty
+	// - contain special characters
+	// - could be confused with other TOML types
+	// - don't match bare key format
+	needsQuotes := s == "" ||
+		strings.ContainsAny(s, " \t\n\r\"\\#=[]") ||
+		strings.EqualFold(s, "true") ||
+		strings.EqualFold(s, "false") ||
+		(len(s) > 0 && (s[0] == '-' || (s[0] >= '0' && s[0] <= '9')))
 
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch ch {
-		case '"':
-			if i == 0 || s[i-1] != '\\' {
-				inQuotes = !inQuotes
+	if needsQuotes {
+		m.buffer.WriteByte('"')
+		for _, r := range s {
+			switch r {
+			case '"', '\\':
+				m.buffer.WriteByte('\\')
+				m.buffer.WriteRune(r)
+			case '\t':
+				m.buffer.WriteString("\\t")
+			case '\n':
+				m.buffer.WriteString("\\n")
+			case '\r':
+				m.buffer.WriteString("\\r")
+			default:
+				m.buffer.WriteRune(r)
 			}
-			current.WriteByte(ch)
-		case '[':
-			if !inQuotes {
-				depth++
-			}
-			current.WriteByte(ch)
-		case ']':
-			if !inQuotes {
-				depth--
-			}
-			current.WriteByte(ch)
-		case ',':
-			if !inQuotes && depth == 0 {
-				result = append(result, current.String())
-				current.Reset()
-			} else {
-				current.WriteByte(ch)
-			}
-		default:
-			current.WriteByte(ch)
+		}
+		m.buffer.WriteByte('"')
+	} else {
+		m.buffer.WriteString(s)
+	}
+	return nil
+}
+
+// marshalInt converts an integer to TOML format.
+// Verifies the value fits within int64 bounds.
+// Numbers are written in decimal format.
+func (m *marshaler) marshalInt(i int64) error {
+	const fn = "marshaler.marshalInt"
+	if i > math.MaxInt64 || i < math.MinInt64 {
+		return errorf(fn, fmt.Errorf(errInvalidValue), fmt.Sprintf("integer overflow: %d", i))
+	}
+	m.buffer.WriteString(strconv.FormatInt(i, 10))
+	return nil
+}
+
+// marshalFloat converts a floating-point number to TOML format.
+// Uses decimal point notation with minimal precision.
+// Ensures decimal point is present even for whole numbers.
+func (m *marshaler) marshalFloat(f float64) error {
+	// Use -1 precision to get minimal representation
+	s := strconv.FormatFloat(f, 'f', -1, 64)
+	// Ensure decimal point for whole numbers
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	m.buffer.WriteString(s)
+	return nil
+}
+
+// marshalBool converts a boolean to TOML format.
+// Outputs either "true" or "false".
+func (m *marshaler) marshalBool(b bool) error {
+	if b {
+		m.buffer.WriteString("true")
+	} else {
+		m.buffer.WriteString("false")
+	}
+	return nil
+}
+
+// lenNotEmpty returns count of non-empty tables
+func lenNotEmpty(tables map[string]reflect.Value) int {
+	count := 0
+	for _, v := range tables {
+		if v.Len() > 0 {
+			count++
 		}
 	}
-
-	if current.Len() > 0 {
-		result = append(result, current.String())
-	}
-	return result
+	return count
 }

@@ -7,128 +7,86 @@ import (
 	"github.com/LixenWraith/tinytoml"
 )
 
-type ServerConfig struct {
-	Host     string   `toml:"host"`
-	Port     int      `toml:"port"`
-	SSLPorts []int    `toml:"ssl_ports"`
-	Regions  []string `toml:"regions"`
-}
-
-type DatabaseConfig struct {
-	Primary struct {
-		Host     string   `toml:"host"`
-		Port     int      `toml:"port"`
-		User     string   `toml:"user"`
-		Password string   `toml:"password"`
-		Replicas []string `toml:"replicas"`
-	} `toml:"primary"`
-	ReadOnly struct {
-		Hosts    []string `toml:"hosts"`
-		Port     int      `toml:"port"`
-		User     string   `toml:"user"`
-		Password string   `toml:"password"`
-	} `toml:"readonly"`
-}
-
-type Config struct {
-	AppName     string         `toml:"app_name"`
-	Version     string         `toml:"version"`
-	Debug       bool           `toml:"debug"`
-	MaxWorkers  int            `toml:"max_workers"`
-	RateLimit   float64        `toml:"rate_limit"`
-	LogLevels   []string       `toml:"log_levels"`
-	Tags        []string       `toml:"tags"`
-	Server      ServerConfig   `toml:"server"`
-	Database    DatabaseConfig `toml:"database"`
-	Matrix      [][]int        `toml:"matrix"`      // Example of nested arrays
-	Mixed       []interface{}  `toml:"mixed_array"` // Example of mixed type array
-	Environment string         `toml:"env.type"`    // Example of dot notation without group
-}
-
 func main() {
-	// Example TOML content demonstrating all supported features
-	input := `# Application Configuration
-app_name = "Complex Server"
-version = "2.0.0"
-debug = true
-max_workers = 16
-rate_limit = 1.5
-log_levels = ["INFO", "WARN", "ERROR"]
-tags = ["prod", "high-memory", "cluster-1"]
+	input := `# Basic types demonstration
+name = "Complex \nApp"    # quoted string with space
+env = production        # bare string
+debug = true           # boolean true
+maintenance = false    # boolean false
+workers = 42           # positive integer
+timeout = -30          # negative integer
+rate = 3.14           # positive float
+temp = -0.5           # negative float
 
-# Demonstrate nested arrays
-matrix = [
-   [1, 2, 3],
-   [4, 5, 6],
-   [7, 8, 9]
-]
 
-# Demonstrate mixed type array
-mixed_array = ["string", 42, 3.14, true, [1, 2, 3]]
+# Array examples (one of each type)
+ports = [8080, -6379]                      # mixed sign integers
+rates = [1.5, -2.5]                        # mixed sign floats
+flags = [true, false]                      # booleans
+hosts = ["local host", bare_host]          # mixed quoted/bare strings
 
-# Environment settings using dot notation
-env.type = "production"
-
+# Table examples
 [server]
 host = "localhost"
 port = 8080
-ssl_ports = [443, 8443, 9443]
-regions = ["us-east", "us-west", "eu-central"]
 
+# Same table, different keys (should merge)
+[server]
+name = "main"
+active = true
+
+# Nested tables
 [database.primary]
-host = "db-master.internal"
+host = "db1"
+ip = 2.33.45
 port = 5432
-user = "admin"
-password = "super-secret"
-replicas = [
-   "db-replica-1.internal",
-   "db-replica-2.internal",
-   "db-replica-3.internal"
-]
 
-[database.readonly]
-hosts = ["db-ro-1.internal", "db-ro-2.internal"]
-port = 5432
-user = "reader"
-password = "read-only-pass"`
+[database.replica]
+host = "db2"
+host = "temp"         # first instance of key in the same group/subgroup is used, sebsequent definition of same key is ignored
+port = 5433
 
-	var config Config
+# Dotted keys (alternative to nested tables)
+queue.type = "redis"
+queue.port = 6379
+
+# Deeply nested example
+[services.cache.redis]
+host = "redis1"
+port = 6379
+slaves = ["redis2", "redis3"]
+metrics = [1.1, -2.2, 1926.397247]
+features = [true, false]`
+
+	fmt.Printf("Original TOML:\n%s\n\n", input)
+
+	// Parse TOML
+	var config map[string]any
 	if err := tinytoml.Unmarshal([]byte(input), &config); err != nil {
-		log.Fatalf("Failed to unmarshal: %v", err)
+		log.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	// Print the parsed configuration
-	fmt.Printf("Application: %s v%s\n", config.AppName, config.Version)
-	fmt.Printf("Environment: %s\n", config.Environment)
-	fmt.Printf("Debug: %v\n", config.Debug)
-	fmt.Printf("Workers: %d\n", config.MaxWorkers)
-	fmt.Printf("Rate Limit: %.2f\n", config.RateLimit)
-	fmt.Printf("Log Levels: %v\n", config.LogLevels)
-	fmt.Printf("Tags: %v\n", config.Tags)
+	fmt.Printf("Parsed structure:\n%#v\n\n", config)
 
-	fmt.Printf("\nServer Configuration:\n")
-	fmt.Printf("Host: %s\n", config.Server.Host)
-	fmt.Printf("Port: %d\n", config.Server.Port)
-	fmt.Printf("SSL Ports: %v\n", config.Server.SSLPorts)
-	fmt.Printf("Regions: %v\n", config.Server.Regions)
-
-	fmt.Printf("\nDatabase Configuration:\n")
-	fmt.Printf("Primary DB: %s:%d\n", config.Database.Primary.Host, config.Database.Primary.Port)
-	fmt.Printf("Primary Replicas: %v\n", config.Database.Primary.Replicas)
-	fmt.Printf("ReadOnly Hosts: %v\n", config.Database.ReadOnly.Hosts)
-
-	fmt.Printf("\nMatrix:\n")
-	for _, row := range config.Matrix {
-		fmt.Printf("%v\n", row)
-	}
-
-	fmt.Printf("\nMixed Array: %v\n", config.Mixed)
-
-	// Marshal back to TOML with indentation
-	output, err := tinytoml.MarshalIndent(config)
+	// Marshal back to TOML
+	output, err := tinytoml.Marshal(config)
 	if err != nil {
-		log.Fatalf("Failed to marshal: %v", err)
+		log.Fatalf("Marshal failed: %v", err)
 	}
 
-	fmt.Printf("\nGenerated TOML:\n%s", output)
+	fmt.Printf("Generated TOML:\n%s\n", output)
+
+	// Marshal with indentation
+	indented, err := tinytoml.MarshalIndent(config)
+	if err != nil {
+		log.Fatalf("MarshalIndent failed: %v", err)
+	}
+
+	fmt.Printf("\nIndented TOML:\n%s", indented)
+
+	// Verify roundtrip by parsing again
+	var verified map[string]any
+	if err := tinytoml.Unmarshal(output, &verified); err != nil {
+		log.Fatalf("Verification unmarshal failed: %v", err)
+	}
 }

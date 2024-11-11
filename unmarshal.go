@@ -1,487 +1,322 @@
-// File: tinytoml/unmarshal.go
-
 package tinytoml
 
 import (
 	"bufio"
-	"io"
+	"bytes"
+	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
-// Additional error constants for unmarshaling
-const (
-	// Parse Errors
-	ErrReadFailed        = "failed to read input"
-	ErrUnterminatedArray = "unterminated array"
-	ErrEmptyGroup        = "empty group name"
-	ErrInvalidArray      = "invalid array format"
-	ErrInvalidElement    = "invalid array element"
-
-	// Decode Errors
-	ErrInvalidTarget     = "decode target must be a non-nil pointer"
-	ErrNotStruct         = "decode target must be a struct"
-	ErrUnsupportedField  = "unsupported field type"
-	ErrFieldOverflow     = "field value overflow"
-	ErrArrayTypeMismatch = "array element type mismatch"
-)
-
-// Unmarshal parses TOML data into a struct
-func Unmarshal(data []byte, v interface{}) error {
+// Unmarshal parses TOML data into a map[string]any.
+// It supports basic TOML types (string, integer, float, boolean),
+// homogeneous arrays, and nested tables using dot notation.
+// Returns error if the TOML is invalid or cannot be parsed into the target type.
+func Unmarshal(data []byte, v any) error {
 	const fn = "Unmarshal"
-
 	p := &parser{
-		groups:   make(map[string]map[string]Value),
-		seenKeys: make(map[string]bool),
+		scanner: bufio.NewScanner(bytes.NewReader(data)),
+		root:    newTableGroup("", nil),
+		current: nil, // will be set to root during parse
+		lineNum: 0,
 	}
 
-	if err := p.parse(data); err != nil {
-		return wrapf(fn, err)
+	if err := p.parse(); err != nil {
+		return errorf(fn, err)
 	}
 
-	if err := p.decode(v); err != nil {
-		return wrapf(fn, err)
-	}
+	// Convert result to flat map
+	result := flattenTable(p.root)
 
-	return nil
+	// Set the result into the provided interface
+	if m, ok := v.(*map[string]any); ok {
+		*m = result
+		return nil
+	}
+	return errorf(fn, fmt.Errorf(errInvalidTarget))
 }
 
-// parser holds the parsing state
+// parser maintains the state during TOML parsing.
+// It tracks current position, table context, and builds the result structure.
 type parser struct {
-	groups   map[string]map[string]Value
-	current  string          // Current group
-	lineNum  int             // For error reporting
-	seenKeys map[string]bool // Track duplicate keys
-	// Array parsing state
-	inArray    bool
-	arrayKey   string
-	arrayBuf   strings.Builder
-	arrayDepth int
+	scanner *bufio.Scanner
+	root    *tableGroup
+	current *tableGroup
+	lineNum int
 }
 
-// parse processes TOML content
-func (p *parser) parse(data []byte) error {
+// parse is the main parsing loop that processes the TOML document.
+// Handles comments, table headers, and key-value pairs.
+// Maintains table context for proper nesting.
+func (p *parser) parse() error {
 	const fn = "parser.parse"
+	p.current = p.root
 
-	reader := bufio.NewReader(strings.NewReader(string(data)))
-	p.current = "" // Root group
-	p.groups[""] = make(map[string]Value)
-
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return errorf(fn, "%s: %v", ErrReadFailed, err)
-		}
-
+	for p.scanner.Scan() {
 		p.lineNum++
-		line = strings.TrimSpace(line)
+		line := p.scanner.Text()
 
-		// Skip empty lines and full-line comments
+		// Skip empty lines and comments
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
-			if err == io.EOF {
-				break
-			}
 			continue
 		}
 
-		// Handle end-of-line comments
+		// Handle inline comments
 		if idx := strings.Index(line, " #"); idx >= 0 {
 			line = strings.TrimSpace(line[:idx])
 		}
 
-		if err := p.parseLine(line); err != nil {
-			return wrapf(fn, err)
+		// Handle table header
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if err := p.parseTableHeader(line); err != nil {
+				return errorf(fn, err, fmt.Sprintf("line %d", p.lineNum))
+			}
+			continue
 		}
 
-		if err == io.EOF {
-			if p.inArray {
-				return errorf(fn, "%s at line %d", ErrUnterminatedArray, p.lineNum)
-			}
-			break
+		// Parse key-value pair
+		if err := p.parseLine(line); err != nil {
+			return errorf(fn, err, fmt.Sprintf("line %d", p.lineNum))
 		}
+	}
+
+	if err := p.scanner.Err(); err != nil {
+		return errorf(fn, fmt.Errorf(errReadFailed), err.Error())
 	}
 
 	return nil
 }
 
-// parseLine handles a single line of TOML
+// parseTableHeader processes a table header line [table.name].
+// Creates or navigates the table hierarchy as needed.
+// Returns error if the table header format is invalid.
+func (p *parser) parseTableHeader(line string) error {
+	const fn = "parser.parseTableHeader"
+	// Remove brackets and trim spaces
+	tablePath := strings.TrimSpace(line[1 : len(line)-1])
+	if tablePath == "" {
+		return errorf(fn, fmt.Errorf(errInvalidTableHeader))
+	}
+
+	// Split and validate table path
+	parts, err := splitTableKey(tablePath)
+	if err != nil {
+		return errorf(fn, err)
+	}
+
+	// Navigate/create table structure
+	current := p.root
+	for _, part := range parts {
+		if child, exists := current.children[part]; exists {
+			current = child
+		} else {
+			newGroup := newTableGroup(part, current)
+			current.children[part] = newGroup
+			current = newGroup
+		}
+	}
+	p.current = current
+	return nil
+}
+
+// parseLine processes a key-value pair line.
+// Handles dotted keys by creating intermediate tables.
+// Returns error if the line format or value is invalid.
 func (p *parser) parseLine(line string) error {
 	const fn = "parser.parseLine"
-
-	line = strings.TrimSpace(line)
-
-	// Skip empty lines and comments
-	if line == "" || strings.HasPrefix(line, "#") {
-		return nil
-	}
-
-	// Handle end-of-line comments
-	if idx := strings.Index(line, " #"); idx >= 0 {
-		line = strings.TrimSpace(line[:idx])
-	}
-
-	// Continue array parsing if we're in an array
-	if p.inArray {
-		if len(line) > 0 {
-			if p.arrayBuf.Len() > 0 {
-				p.arrayBuf.WriteByte(' ')
-			}
-			p.arrayBuf.WriteString(line)
-		}
-
-		// Count brackets
-		for _, ch := range line {
-			if ch == '[' {
-				p.arrayDepth++
-			} else if ch == ']' {
-				p.arrayDepth--
-				if p.arrayDepth == 0 {
-					// Array complete
-					arrayStr := p.arrayBuf.String()
-					p.arrayBuf.Reset()
-					p.inArray = false
-
-					value, err := p.parseArray(arrayStr)
-					if err != nil {
-						return wrapf(fn, err)
-					}
-
-					// Split key into group.key parts
-					keyParts := strings.Split(p.arrayKey, ".")
-					actualKey := keyParts[len(keyParts)-1]
-					groupName := p.current
-					if len(keyParts) > 1 {
-						groupName = strings.Join(keyParts[:len(keyParts)-1], ".")
-					}
-
-					// Store the value in correct group
-					if p.groups[groupName] == nil {
-						p.groups[groupName] = make(map[string]Value)
-					}
-					p.groups[groupName][actualKey] = value
-					return nil
-				}
-			}
-		}
-		return nil
-	}
-
-	// Handle group headers
-	if strings.HasPrefix(line, "[") {
-		if !strings.HasSuffix(line, "]") {
-			return errorf(fn, "%s at line %d", ErrInvalidGroupFormat, p.lineNum)
-		}
-		return p.parseGroup(line)
-	}
-
-	// Parse key-value pair
+	// Split into key and value
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 {
-		return errorf(fn, "%s at line %d", ErrInvalidValueFormat, p.lineNum)
+		return errorf(fn, fmt.Errorf(errInvalidFormat))
 	}
 
 	key := strings.TrimSpace(parts[0])
 	value := strings.TrimSpace(parts[1])
 
 	if key == "" {
-		return errorf(fn, "%s at line %d", ErrMissingKey, p.lineNum)
+		return errorf(fn, fmt.Errorf(errMissingKey))
 	}
 
-	if value == "" {
-		return errorf(fn, "%s at line %d", ErrEmptyValue, p.lineNum)
+	// Handle dotted keys
+	keyParts := strings.Split(key, ".")
+	for _, part := range keyParts {
+		if !isValidKey(part) {
+			return errorf(fn, fmt.Errorf(errInvalidKey), part)
+		}
 	}
 
-	// Check if this starts an array
-	if strings.HasPrefix(value, "[") {
-		p.arrayKey = key
-		p.arrayBuf.WriteString(value)
-		p.inArray = true
-		p.arrayDepth = 0 // Start at 0 since we'll count the first [ below
-
-		for _, ch := range value {
-			if ch == '[' {
-				p.arrayDepth++
-			} else if ch == ']' {
-				p.arrayDepth--
-				if p.arrayDepth == 0 {
-					// Single-line array
-					arrayStr := p.arrayBuf.String()
-					p.arrayBuf.Reset()
-					p.inArray = false
-
-					value, err := p.parseArray(arrayStr)
-					if err != nil {
-						return wrapf(fn, err)
-					}
-
-					// Split key into group.key parts
-					keyParts := strings.Split(key, ".")
-					actualKey := keyParts[len(keyParts)-1]
-					groupName := p.current
-					if len(keyParts) > 1 {
-						groupName = strings.Join(keyParts[:len(keyParts)-1], ".")
-					}
-
-					// Store the value in correct group
-					if p.groups[groupName] == nil {
-						p.groups[groupName] = make(map[string]Value)
-					}
-					p.groups[groupName][actualKey] = value
-					return nil
-				}
+	// If it's a dotted key, navigate to the correct table
+	current := p.current
+	if len(keyParts) > 1 {
+		for _, part := range keyParts[:len(keyParts)-1] {
+			if child, exists := current.children[part]; exists {
+				current = child
+			} else {
+				newGroup := newTableGroup(part, current)
+				current.children[part] = newGroup
+				current = newGroup
 			}
 		}
+		key = keyParts[len(keyParts)-1]
+	}
+
+	// Don't overwrite existing values (first occurrence wins)
+	if _, exists := current.values[key]; exists {
 		return nil
 	}
 
-	return p.parseKeyValue(line)
-}
-
-// parseGroup handles a group declaration
-func (p *parser) parseGroup(line string) error {
-	const fn = "parser.parseGroup"
-
-	group := strings.TrimSpace(line[1 : len(line)-1])
-	if group == "" {
-		return errorf(fn, "%s at line %d", ErrEmptyGroup, p.lineNum)
-	}
-
-	// Validate group name
-	parts := strings.Split(group, ".")
-	for _, part := range parts {
-		if !isValidKey(part) {
-			return errorf(fn, "%s: '%s' at line %d", ErrInvalidKeyFormat, part, p.lineNum)
-		}
-	}
-
-	p.current = group
-
-	// Check for duplicate groups
-	if _, exists := p.groups[group]; exists {
-		return errorf(fn, "%s: '%s' at line %d", ErrDuplicateKey, group, p.lineNum)
-	}
-
-	p.groups[group] = make(map[string]Value)
-	return nil
-}
-
-// parseKeyValue handles a key-value pair
-func (p *parser) parseKeyValue(line string) error {
-	const fn = "parser.parseKeyValue"
-
-	parts := strings.SplitN(line, "=", 2)
-	if len(parts) != 2 {
-		return errorf(fn, "%s at line %d", ErrInvalidValueFormat, p.lineNum)
-	}
-
-	key := strings.TrimSpace(parts[0])
-	if key == "" {
-		return errorf(fn, "%s at line %d", ErrMissingKey, p.lineNum)
-	}
-
-	// Split key into group.key parts
-	keyParts := strings.Split(key, ".")
-	actualKey := keyParts[len(keyParts)-1]
-	groupName := p.current
-	if len(keyParts) > 1 {
-		groupName = strings.Join(keyParts[:len(keyParts)-1], ".")
-	}
-
-	// Create full key for duplicate checking
-	fullKey := actualKey
-	if groupName != "" {
-		fullKey = groupName + "." + actualKey
-	}
-
-	// Skip if key already seen
-	if p.seenKeys[fullKey] {
-		return nil
-	}
-	p.seenKeys[fullKey] = true
-
-	if !isValidKey(actualKey) {
-		return errorf(fn, "%s: '%s' at line %d", ErrInvalidKeyFormat, actualKey, p.lineNum)
-	}
-
-	val := strings.TrimSpace(parts[1])
-	if val == "" {
-		return errorf(fn, "%s at line %d for key '%s'", ErrEmptyValue, p.lineNum, actualKey)
-	}
-
-	value, err := p.parseValue(val)
+	parsedValue, err := p.parseValue(value)
 	if err != nil {
-		return wrapf(fn, err)
-	}
-	if value.Type == TokenInvalid {
-		return errorf(fn, "%s at line %d for key '%s'", ErrInvalidValueFormat, p.lineNum, actualKey)
+		return errorf(fn, err, fmt.Sprintf("key %q", key))
 	}
 
-	// Store in correct group
-	if p.groups[groupName] == nil {
-		p.groups[groupName] = make(map[string]Value)
-	}
-	p.groups[groupName][actualKey] = value
-
+	current.values[key] = parsedValue
 	return nil
 }
 
-// parseValue determines the type and value of a TOML value
-func (p *parser) parseValue(val string) (Value, error) {
+// parseValue converts a TOML value string to its Go representation.
+// Handles basic types, quoted strings, and arrays.
+// Returns error for invalid formats or unsupported types.
+func (p *parser) parseValue(val string) (any, error) {
 	const fn = "parser.parseValue"
-
 	val = strings.TrimSpace(val)
-
-	if !utf8.ValidString(val) {
-		return Value{Type: TokenInvalid}, errorf(fn, ErrInvalidUTF8)
+	if val == "" {
+		return nil, errorf(fn, fmt.Errorf(errEmptyValue))
 	}
 
-	// Handle arrays
+	// Handle array
 	if strings.HasPrefix(val, "[") {
 		return p.parseArray(val)
 	}
 
-	// Handle quoted strings
+	// Handle quoted string
 	if strings.HasPrefix(val, "\"") {
-		if !strings.HasSuffix(val, "\"") {
-			return Value{Type: TokenInvalid}, errorf(fn, ErrUnterminatedString)
-		}
-
-		if _, err := unescapeString(val); err != nil {
-			return Value{Type: TokenInvalid}, wrapf(fn, err)
-		}
-
-		return Value{
-			Type:  TokenString,
-			Raw:   val,
-			Group: p.current,
-		}, nil
+		return p.parseQuotedString(val)
 	}
 
-	// Boolean
-	if val == "true" || val == "false" {
-		return Value{
-			Type:  TokenBool,
-			Raw:   val,
-			Group: p.current,
-		}, nil
+	// Handle boolean
+	if val == "true" {
+		return true, nil
+	}
+	if val == "false" {
+		return false, nil
 	}
 
-	// Try number
-	if !strings.Contains(val, ".") {
-		if _, err := parseInt(val); err != nil {
-			if strings.Contains(err.Error(), "overflow") {
-				return Value{Type: TokenInvalid}, wrapf(fn, err)
-			}
-		} else {
-			return Value{
-				Type:  TokenNumber,
-				Raw:   val,
-				Group: p.current,
-			}, nil
-		}
-	} else {
-		if _, err := parseFloat(val); err != nil {
-			return Value{Type: TokenInvalid}, wrapf(fn, err)
-		} else {
-			return Value{
-				Type:  TokenNumber,
-				Raw:   val,
-				Group: p.current,
-			}, nil
-		}
+	// Handle number
+	if v, err := p.parseNumber(val); err == nil {
+		return v, nil
 	}
 
-	// Unquoted string validation
-	if strings.ContainsAny(val, " \t'") {
-		return Value{Type: TokenInvalid}, errorf(fn, "%s: contains whitespace or quotes", ErrInvalidValueFormat)
+	// Handle bare string
+	if err := validateBareString(val); err != nil {
+		return nil, errorf(fn, err)
 	}
-
-	for _, r := range val {
-		if !unicode.IsPrint(r) {
-			return Value{Type: TokenInvalid}, errorf(fn, "%s: contains non-printable character", ErrInvalidValueFormat)
-		}
-	}
-
-	// Unquoted string
-	return Value{
-		Type:  TokenString,
-		Raw:   val,
-		Group: p.current,
-	}, nil
+	return val, nil
 }
 
-// parseArray parses arrays
-func (p *parser) parseArray(val string) (Value, error) {
+// parseArray converts a TOML array string to a Go slice.
+// Ensures array elements are of consistent type.
+// Returns error if array format is invalid or elements are heterogeneous.
+func (p *parser) parseArray(val string) (any, error) {
 	const fn = "parser.parseArray"
-
 	if !strings.HasSuffix(val, "]") {
-		return Value{Type: TokenInvalid}, errorf(fn, ErrUnterminatedArray)
+		return nil, errorf(fn, fmt.Errorf(errUnterminatedArray))
 	}
 
-	// Handle empty array
 	if val == "[]" {
-		return Value{
-			Type:  TokenArray,
-			Raw:   val,
-			Group: p.current,
-			Array: []Value{},
-		}, nil
+		return []any{}, nil
 	}
 
-	// Remove outer brackets and trim spaces
 	content := strings.TrimSpace(val[1 : len(val)-1])
-	elements := p.splitArrayElements(content)
-
-	var values []Value
-	for _, elem := range elements {
-		elemVal, err := p.parseValue(elem)
-		if err != nil {
-			return Value{Type: TokenInvalid}, errorf(fn, "%s: %v", ErrInvalidElement, err)
-		}
-		elemVal.Raw = elem
-		values = append(values, elemVal)
+	elements := splitArrayElements(content)
+	if len(elements) == 0 {
+		return []any{}, nil
 	}
 
-	return Value{
-		Type:  TokenArray,
-		Raw:   val,
-		Group: p.current,
-		Array: values,
-	}, nil
+	firstElem, err := p.parseValue(elements[0])
+	if err != nil {
+		return nil, errorf(fn, err, "array element 0")
+	}
+
+	return p.parseArrayElements(elements, firstElem, reflect.TypeOf(firstElem))
 }
 
-// splitArrayElements splits array elements
-func (p *parser) splitArrayElements(input string) []string {
-	var elements []string
+// parseArrayElements parses an array of elements into a typed slice.
+// It is a generic function that can handle different types (string, int64, float64, bool)
+// based on the provided converter function.
+//
+// Type parameter T represents the target type for array elements.
+//
+// Parameters:
+//   - elements: slice of string representations of array elements to parse
+//   - converter: function that converts a parsed any value to type T
+//     The converter returns the converted value and a boolean indicating success
+//
+// Returns:
+//   - []T: slice of parsed and type-converted elements
+//   - error: parsing or type conversion error with context
+//
+// The function ensures type consistency across all elements in the array
+// by applying the converter function to each element. If any element fails
+// to parse or convert to the target type, an error is returned with the
+// element index for context.
+//
+// Example usage:
+//
+//	strings, err := p.parseArrayElements(elements, func(v any) (string, bool) {
+//	    s, ok := v.(string)
+//	    return s, ok
+//	})
+func (p *parser) parseArrayElements(elements []string, firstElem any, elementType reflect.Type) (any, error) {
+	const fn = "parser.parseArrayElements"
+
+	// Create typed slice using reflection
+	result := reflect.MakeSlice(reflect.SliceOf(elementType), len(elements), len(elements))
+
+	// Set first element
+	result.Index(0).Set(reflect.ValueOf(firstElem))
+
+	// Parse remaining elements
+	for i := 1; i < len(elements); i++ {
+		val, err := p.parseValue(elements[i])
+		if err != nil {
+			return nil, errorf(fn, err, fmt.Sprintf("element %d", i))
+		}
+
+		if !reflect.TypeOf(val).AssignableTo(elementType) {
+			return nil, errorf(fn, fmt.Errorf(errTypeMismatch), fmt.Sprintf("element %d", i))
+		}
+
+		result.Index(i).Set(reflect.ValueOf(val))
+	}
+
+	return result.Interface(), nil
+}
+
+// splitArrayElements splits array elements handling quoted strings properly.
+// Maintains proper handling of commas within quoted strings.
+// Returns slice of individual element strings.
+func splitArrayElements(input string) []string {
+	var result []string
 	var current strings.Builder
-	var depth int
 	inQuotes := false
 
 	for i := 0; i < len(input); i++ {
 		ch := input[i]
-
 		switch ch {
 		case '"':
 			if i == 0 || input[i-1] != '\\' {
 				inQuotes = !inQuotes
 			}
 			current.WriteByte(ch)
-		case '[':
-			if !inQuotes {
-				depth++
-			}
-			current.WriteByte(ch)
-		case ']':
-			if !inQuotes {
-				depth--
-			}
-			current.WriteByte(ch)
 		case ',':
-			if !inQuotes && depth == 0 {
-				elements = append(elements, strings.TrimSpace(current.String()))
-				current.Reset()
+			if !inQuotes {
+				if current.Len() > 0 {
+					result = append(result, strings.TrimSpace(current.String()))
+					current.Reset()
+				}
 			} else {
 				current.WriteByte(ch)
 			}
@@ -490,223 +325,72 @@ func (p *parser) splitArrayElements(input string) []string {
 		}
 	}
 
-	// Add the last element
 	if current.Len() > 0 {
-		elements = append(elements, strings.TrimSpace(current.String()))
+		result = append(result, strings.TrimSpace(current.String()))
 	}
 
-	return elements
+	return result
 }
 
-// decode converts parsed TOML data into a struct
-func (p *parser) decode(v interface{}) error {
-	const fn = "parser.decode"
-
-	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() {
-		return errorf(fn, ErrInvalidTarget)
+// parseQuotedString processes a quoted string, handling escape sequences.
+// Supports basic escapes: \", \\, \t, \n, \r
+// Returns error for invalid escape sequences or unterminated strings.
+func (p *parser) parseQuotedString(val string) (string, error) {
+	const fn = "parser.parseQuotedString"
+	if !strings.HasSuffix(val, "\"") {
+		return "", errorf(fn, fmt.Errorf(errUnterminatedString))
 	}
 
-	rv = rv.Elem()
-	if rv.Kind() != reflect.Struct {
-		return errorf(fn, ErrNotStruct)
-	}
+	// Remove quotes
+	val = val[1 : len(val)-1]
 
-	rt := rv.Type()
-	for i := 0; i < rt.NumField(); i++ {
-		field := rt.Field(i)
-		fieldVal := rv.Field(i)
+	var result strings.Builder
+	escaped := false
 
-		if !field.IsExported() {
-			continue
-		}
-
-		tag := field.Tag.Get("toml")
-		if tag == "-" {
-			continue
-		}
-
-		parts := strings.Split(tag, ".")
-		if len(parts) == 0 {
-			continue
-		}
-
-		var group, key string
-		if len(parts) > 1 {
-			group = strings.Join(parts[:len(parts)-1], ".")
-			key = parts[len(parts)-1]
+	for i := 0; i < len(val); i++ {
+		c := val[i]
+		if escaped {
+			switch c {
+			case '\\', '"':
+				result.WriteByte(c)
+			case 't':
+				result.WriteByte('\t')
+			case 'n':
+				result.WriteByte('\n')
+			case 'r':
+				result.WriteByte('\r')
+			default:
+				return "", errorf(fn, fmt.Errorf(errInvalidEscape), string(c))
+			}
+			escaped = false
+		} else if c == '\\' {
+			escaped = true
 		} else {
-			group = ""
-			key = parts[0]
-		}
-
-		// Find the value in the correct group
-		groupMap, ok := p.groups[group]
-		if !ok {
-			continue // Skip if group not found
-		}
-
-		val, ok := groupMap[key]
-		if !ok {
-			continue // Skip if key not found in group
-		}
-
-		if err := p.setField(fieldVal, val); err != nil {
-			return errorf(fn, "field '%s': %s", field.Name, err)
+			result.WriteByte(c)
 		}
 	}
 
-	return nil
+	if escaped {
+		return "", errorf(fn, fmt.Errorf(errUnterminatedEscape))
+	}
+
+	return result.String(), nil
 }
 
-// setField sets a struct field to the parsed value
-func (p *parser) setField(field reflect.Value, val Value) error {
-	const fn = "parser.setField"
-
-	switch field.Kind() {
-	case reflect.Slice:
-		if val.Type != TokenArray {
-			return errorf(fn, ErrTypeMismatch)
-		}
-
-		// Create a new slice of the correct type
-		sliceType := field.Type()
-		elemType := sliceType.Elem()
-		slice := reflect.MakeSlice(sliceType, 0, len(val.Array))
-
-		for i, elem := range val.Array {
-			newElem := reflect.New(elemType).Elem()
-			if err := p.setArrayElement(newElem, elem); err != nil {
-				return errorf(fn, "array element %d: %s", i, err)
-			}
-			slice = reflect.Append(slice, newElem)
-		}
-
-		field.Set(slice)
-		return nil
-
-	case reflect.String:
-		str, err := val.GetString()
-		if err != nil {
-			return wrapf(fn, err)
-		}
-		field.SetString(str)
-
-	case reflect.Bool:
-		if val.Type != TokenBool {
-			return errorf(fn, ErrTypeMismatch)
-		}
-		b, err := val.GetBool()
-		if err != nil {
-			return wrapf(fn, err)
-		}
-		field.SetBool(b)
-
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if val.Type != TokenNumber {
-			return errorf(fn, ErrTypeMismatch)
-		}
-		i, err := val.GetInt()
-		if err != nil {
-			return wrapf(fn, err)
-		}
-		if field.OverflowInt(i) {
-			return errorf(fn, "%s: %v", ErrFieldOverflow, field.Type())
-		}
-		field.SetInt(i)
-
-	case reflect.Float32, reflect.Float64:
-		if val.Type != TokenNumber {
-			return errorf(fn, ErrTypeMismatch)
-		}
-		f, err := val.GetFloat()
-		if err != nil {
-			return wrapf(fn, err)
-		}
-		if field.OverflowFloat(f) {
-			return errorf(fn, "%s: %v", ErrFieldOverflow, field.Type())
-		}
-		field.SetFloat(f)
-
-	default:
-		return errorf(fn, "%s: %v", ErrUnsupportedField, field.Type())
+// parseNumber attempts to parse a string as number.
+// Tries integer first, then float.
+// Returns error if the string is not a valid number format.
+func (p *parser) parseNumber(val string) (any, error) {
+	const fn = "parser.parseNumber"
+	// Try parsing as integer first
+	if i, err := strconv.ParseInt(val, 10, 64); err == nil {
+		return i, nil
 	}
 
-	return nil
-}
-
-// setArrayElement sets array elements
-func (p *parser) setArrayElement(field reflect.Value, val Value) error {
-	const fn = "parser.setArrayElement"
-
-	switch field.Kind() {
-	case reflect.Slice:
-		if val.Type != TokenArray {
-			return errorf(fn, "%s: expected array value", ErrArrayTypeMismatch)
-		}
-		sliceType := field.Type()
-		elemType := sliceType.Elem()
-		slice := reflect.MakeSlice(sliceType, 0, len(val.Array))
-
-		for i, elem := range val.Array {
-			newElem := reflect.New(elemType).Elem()
-			if err := p.setArrayElement(newElem, elem); err != nil {
-				if elemType.Kind() == reflect.Int && !strings.Contains(err.Error(), "overflow") {
-					return errorf(fn, "%s: must be number", ErrInvalidElement)
-				}
-				return errorf(fn, "nested array element %d: %s", i, err)
-			}
-			slice = reflect.Append(slice, newElem)
-		}
-		field.Set(slice)
-		return nil
-
-	case reflect.Interface:
-		var v interface{}
-		switch val.Type {
-		case TokenString:
-			s, err := val.GetString()
-			if err != nil {
-				return wrapf(fn, err)
-			}
-			v = s
-		case TokenNumber:
-			if strings.Contains(val.Raw, ".") {
-				f, err := val.GetFloat()
-				if err != nil {
-					return wrapf(fn, err)
-				}
-				v = f
-			} else {
-				i, err := val.GetInt()
-				if err != nil {
-					return wrapf(fn, err)
-				}
-				v = i
-			}
-		case TokenBool:
-			b, err := val.GetBool()
-			if err != nil {
-				return wrapf(fn, err)
-			}
-			v = b
-		case TokenArray:
-			arr := make([]interface{}, len(val.Array))
-			for i, elem := range val.Array {
-				elemField := reflect.New(reflect.TypeOf((*interface{})(nil)).Elem()).Elem()
-				if err := p.setArrayElement(elemField, elem); err != nil {
-					return errorf(fn, "nested array element %d: %s", i, err)
-				}
-				arr[i] = elemField.Interface()
-			}
-			v = arr
-		default:
-			return errorf(fn, "%s: %v", ErrUnsupportedField, val.Type)
-		}
-		field.Set(reflect.ValueOf(v))
-		return nil
-
-	default:
-		return p.setField(field, val)
+	// Try parsing as float
+	if f, err := strconv.ParseFloat(val, 64); err == nil {
+		return f, nil
 	}
+
+	return nil, errorf(fn, fmt.Errorf(errInvalidNumber))
 }

@@ -1,29 +1,29 @@
 # TinyTOML
 
-A minimal TOML parser and encoder for Go configuration files. TinyTOML provides a lightweight implementation focusing on the most commonly used TOML features while maintaining strict parsing rules.
+A minimal TOML parser and encoder for Go. TinyTOML provides a lightweight implementation focusing on the most commonly used TOML features while maintaining strict parsing rules.
+
+The package is designed with simplicity and predictability in mind, to be used for the small/medium size app configuration file management. The limitations and deviations from TOML specs are outlined under the implementation details section below.
 
 ## Features
 
-
 - Basic TOML types support:
-  - Strings (single-line)
+  - Strings (bare and quoted)
   - Numbers (integers and floats)
   - Booleans
-  - Arrays (including nested and mixed-type arrays)
-- Unlimited table/group nesting
-- String escape sequences (`\`, `\"`, `\'`, `\t`)
-- Full comment support (both inline `#` and full-line)
-- Flexible whitespace handling around equals sign and line starts
+  - Arrays (homogeneous type only)
+- Table/group nesting with dot notation
+- Basic string escape sequences (`\"`, `\t`, `\n`, `\r`, `\\`)
+- Comment support (both inline `#` and full-line)
+- Flexible whitespace handling
 - Strict parsing rules:
   - Integer overflow detection
   - Number format validation
-  - Whitespace validation in unquoted strings
-  - Duplicate key detection (first occurrence used)
+  - String format validation
+  - Duplicate key detection (first occurrence wins)
 
 ## Installation
 
 ```bash
-
 go get github.com/LixenWraith/tinytoml
 ```
 
@@ -32,119 +32,108 @@ go get github.com/LixenWraith/tinytoml
 ```go
 package main
 
+
 import (
     "fmt"
     "log"
     "github.com/LixenWraith/tinytoml"
 )
 
-
-type Config struct {
-    AppName string   `toml:"app_name"`
-    Port    int      `toml:"port"`
-    Debug   bool     `toml:"debug"`
-    Tags    []string `toml:"tags"`
-    DB      struct {
-        Host     string  `toml:"host"`
-        Port     int     `toml:"port"`
-        Replicas []string `toml:"replicas"`
-    } `toml:"database"`
-}
-
-
 func main() {
     input := `
+# Basic key/values
 
-# Application config
-app_name = "MyApp"
+name = "MyApp"
 port = 8080
 debug = true
 
-tags = ["prod", "v1", "critical"]
+# Arrays
+hosts = ["localhost", "backup.local"]
 
+# Tables
 [database]
 host = "localhost"
 port = 5432
-replicas = [
-    "replica1.local",
 
-    "replica2.local"
-]`
 
-    var config Config
+# Nested tables
+[services.cache]
+host = "redis.local"
+port = 6379
+`
+
+
+    // Parse TOML into map
+    var config map[string]interface{}
     if err := tinytoml.Unmarshal([]byte(input), &config); err != nil {
         log.Fatal(err)
-
     }
 
     fmt.Printf("%+v\n", config)
 
-
     // Marshal back to TOML
-    output, err := tinytoml.MarshalIndent(config)
+    output, err := tinytoml.Marshal(config)
     if err != nil {
         log.Fatal(err)
-
     }
 
     fmt.Printf("\nGenerated TOML:\n%s", output)
 }
 ```
 
+## Implementation Details
 
-## Limitations
+### Spec Deviations
 
-TinyTOML intentionally omits some TOML features to maintain simplicity:
+- Arrays must be homogeneous (single type elements only)
+- First occurrence of a key wins, subsequent duplicates ignored
+- Table headers are merged, not overwritten
+- Numbers with multiple dots are parsed as strings
 
-- No multi-line string support
+### Implementation Choices
 
-- Limited escape sequence support (only `\`, `\"`, `\'`, `\t`)
-- No support for custom time formats
-- No support for hex/octal/binary number formats
-- No scientific notation support for numbers
-- Unquoted strings cannot contain whitespace (must use quotes)
+- Keys must contain only ASCII letters, digits, underscore, and hyphen
+- String values must be quoted if they contain spcee or any of special characters ",#=[]"
+- String values can be unquoted if they contain only ASCII letters, digits, underscore, and hyphen
+- Escape sequences in strings: \", \t, \n, \r, \
+- Integers checked for int64 bounds
+- During Marshal, map[string]interface{} with no entries produces no output
+- MarshalIndent uses 4-space indentation for arrays
 
+### Unsupported Features
 
-## Design Principles
-
-1. **Simplicity**: Focus on the most commonly used TOML features
-2. **Strictness**: Enforce strict parsing rules to prevent ambiguous configurations
-3. **Predictability**: Clear behavior for edge cases (e.g., duplicate keys)
-
-4. **Type Safety**: Strong type checking and overflow protection
-5. **Readability**: Clean, well-formatted output with proper indentation
-
+- Date/time formats
+- Hex/octal/binary numbers
+- Scientific notation
+- Multi-line strings
+- Inline tables
+- Array of tables
+- Unicode escapes
+- +/- inf and nan floats
 
 ## API
 
 ### `Unmarshal(data []byte, v interface{}) error`
-Parses TOML data into a struct
+Parses TOML data into a map[string]interface{}
 
 ### `Marshal(v interface{}) ([]byte, error)`
-Converts a struct to TOML format
+Converts a Go value to TOML format
 
 ### `MarshalIndent(v interface{}) ([]byte, error)`
-Converts a struct to TOML format with proper indentation
+Like Marshal but adds consistent indentation for improved readability
 
 ## Error Handling
 
 
-TinyTOML provides detailed error messages including line numbers and context:
+TinyTOML provides detailed error messages:
 
 ```go
 if err := tinytoml.Unmarshal(data, &config); err != nil {
-    switch e := err.(type) {
-    case *tinytoml.ParseError:
-        fmt.Printf("Parse error at line %d: %v\n", e.Line, e.Message)
-    default:
-        fmt.Printf("Error: %v\n", err)
-
-    }
+    fmt.Printf("Error: %v\n", err)
 }
 ```
 
 ## License
 
 MIT License - see LICENSE file
-
 

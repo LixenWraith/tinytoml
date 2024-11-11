@@ -2,9 +2,8 @@ package main
 
 import (
 	"fmt"
-	"log"
-
 	"github.com/LixenWraith/tinytoml"
+	"log"
 )
 
 func main() {
@@ -58,31 +57,21 @@ slaves = ["redis2", "redis3"]
 metrics = [1.1, -2.2, 1926.397247]
 features = [true, false]`
 
-	fmt.Printf("Original TOML:\n%s\n\n", input)
-
 	// Parse TOML
-	var config map[string]any
-	if err := tinytoml.Unmarshal([]byte(input), &config); err != nil {
+	var data map[string]any
+	if err := tinytoml.Unmarshal([]byte(input), &data); err != nil {
 		log.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	fmt.Printf("Parsed structure:\n%#v\n\n", config)
+	fmt.Printf("Parsed structure:\n%#v\n\n", data)
 
 	// Marshal back to TOML
-	output, err := tinytoml.Marshal(config)
+	output, err := tinytoml.Marshal(data)
 	if err != nil {
 		log.Fatalf("Marshal failed: %v", err)
 	}
 
 	fmt.Printf("Generated TOML:\n%s\n", output)
-
-	// Marshal with indentation
-	indented, err := tinytoml.MarshalIndent(config)
-	if err != nil {
-		log.Fatalf("MarshalIndent failed: %v", err)
-	}
-
-	fmt.Printf("\nIndented TOML:\n%s", indented)
 
 	// Verify roundtrip by parsing again
 	var verified map[string]any

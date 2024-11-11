@@ -15,6 +15,9 @@ import (
 // Returns error if the TOML is invalid or cannot be parsed into the target type.
 func Unmarshal(data []byte, v any) error {
 	const fn = "Unmarshal"
+
+	// First unmarshal into intermediate map representation
+	var intermediate map[string]any
 	p := &parser{
 		scanner: bufio.NewScanner(bytes.NewReader(data)),
 		root:    newTableGroup("", nil),
@@ -27,14 +30,121 @@ func Unmarshal(data []byte, v any) error {
 	}
 
 	// Convert result to flat map
-	result := flattenTable(p.root)
+	intermediate = flattenTable(p.root)
 
-	// Set the result into the provided interface
-	if m, ok := v.(*map[string]any); ok {
-		*m = result
+	return mapToAny(intermediate, v)
+}
+
+// mapToAny populates any target type from map[string]any
+func mapToAny(data map[string]any, v any) error {
+	const fn = "mapToAny"
+
+	val := reflect.ValueOf(v)
+	if val.Kind() != reflect.Ptr || val.IsNil() {
+		return errorf(fn, fmt.Errorf(errNilValue))
+	}
+	val = val.Elem()
+
+	switch val.Kind() {
+	case reflect.Map:
+		if val.IsNil() {
+			val.Set(reflect.MakeMap(val.Type()))
+		}
+		for k, v := range data {
+			val.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
+		}
+
+	case reflect.Struct:
+		t := val.Type()
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			fval := val.Field(i)
+
+			if !fval.CanSet() {
+				continue
+			}
+
+			tag := field.Tag.Get("toml")
+			if tag == "" || tag == "-" {
+				continue
+			}
+
+			v, ok := data[tag]
+			if !ok {
+				continue
+			}
+
+			switch fval.Kind() {
+			case reflect.Struct:
+				if m, ok := v.(map[string]any); ok {
+					if err := mapToAny(m, fval.Addr().Interface()); err != nil {
+						return errorf(fn, err)
+					}
+				}
+			default:
+				if err := setValue(fval, v); err != nil {
+					return errorf(fn, err)
+				}
+			}
+		}
+
+	case reflect.Interface:
+		val.Set(reflect.ValueOf(data))
+
+	default:
+		return errorf(fn, fmt.Errorf(errInvalidTarget))
+	}
+
+	return nil
+}
+
+// setValue sets a field value with appropriate type conversion
+func setValue(field reflect.Value, value any) error {
+	const fn = "setValue"
+
+	v := reflect.ValueOf(value)
+
+	// Handle nil
+	if value == nil {
 		return nil
 	}
-	return errorf(fn, fmt.Errorf(errInvalidTarget))
+
+	// Handle nested structs
+	if field.Kind() == reflect.Struct {
+		if m, ok := value.(map[string]any); ok {
+			return mapToAny(m, field.Addr().Interface())
+		}
+		return errorf(fn, fmt.Errorf(errUnsupported))
+	}
+
+	// Handle slices
+	if field.Kind() == reflect.Slice {
+		if v.Kind() != reflect.Slice {
+			return errorf(fn, fmt.Errorf(errUnsupported))
+		}
+		slice := reflect.MakeSlice(field.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			if err := setValue(slice.Index(i), v.Index(i).Interface()); err != nil {
+				return err
+			}
+		}
+		field.Set(slice)
+		return nil
+	}
+
+	// Handle direct assignment
+	if v.Type().AssignableTo(field.Type()) {
+		field.Set(v)
+		return nil
+	}
+
+	// Try conversion
+	if v.Type().ConvertibleTo(field.Type()) {
+		field.Set(v.Convert(field.Type()))
+		return nil
+	}
+
+	return errorf(fn, fmt.Errorf("cannot assign %v to %v", v.Type(), field.Type()))
 }
 
 // parser maintains the state during TOML parsing.

@@ -20,43 +20,89 @@ func Marshal(v any) ([]byte, error) {
 		return nil, errorf(fn, fmt.Errorf(errNilValue))
 	}
 
+	data, err := anyToMap(v)
+	if err != nil {
+		return nil, errorf(fn, err)
+	}
+
 	m := &marshaler{
 		buffer: &bytes.Buffer{},
 	}
 
-	if err := m.marshalValue(reflect.ValueOf(v), nil); err != nil {
+	if err := m.marshalValue(reflect.ValueOf(data), nil); err != nil {
 		return nil, errorf(fn, err)
 	}
 
 	return m.buffer.Bytes(), nil
 }
 
+// anyToMap converts any Go value to map[string]any
+func anyToMap(v any) (map[string]any, error) {
+	const fn = "anyToMap"
+	if v == nil {
+		return nil, errorf(fn, fmt.Errorf(errNilValue))
+	}
+
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return nil, errorf(fn, fmt.Errorf(errNilValue))
+		}
+		val = val.Elem()
+	}
+
+	switch val.Kind() {
+	case reflect.Map:
+		result := make(map[string]any)
+		iter := val.MapRange()
+		for iter.Next() {
+			k := iter.Key()
+			if k.Kind() != reflect.String {
+				return nil, errorf(fn, fmt.Errorf(errInvalidString))
+			}
+			result[k.String()] = iter.Value().Interface()
+		}
+		return result, nil
+
+	case reflect.Struct:
+		result := make(map[string]any)
+		t := val.Type()
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			value := val.Field(i)
+
+			if !value.CanInterface() {
+				continue
+			}
+
+			tag := field.Tag.Get("toml")
+			if tag == "" || tag == "-" {
+				continue
+			}
+
+			switch value.Kind() {
+			case reflect.Struct:
+				nested, err := anyToMap(value.Interface())
+				if err != nil {
+					return nil, err
+				}
+				result[tag] = nested
+			case reflect.Slice:
+				result[tag] = value.Interface()
+			default:
+				result[tag] = value.Interface()
+			}
+		}
+		return result, nil
+
+	default:
+		return nil, errorf(fn, fmt.Errorf(errUnsupported))
+	}
+}
+
 // marshaler handles the TOML encoding process and maintains the output buffer.
 type marshaler struct {
 	buffer *bytes.Buffer
-}
-
-// marshalValue handles top-level value dispatch based on type.
-// For maps, it maintains the table path context for proper TOML structure.
-// Other types are marshaled directly as values.
-func (m *marshaler) marshalValue(v reflect.Value, path []string) error {
-	const fn = "marshaler.marshalValue"
-
-	if v.Kind() == reflect.Interface && !v.IsNil() {
-		v = v.Elem()
-	}
-
-	if v.Kind() == reflect.Map {
-		if err := m.marshalMap(v, path); err != nil {
-			return errorf(fn, err)
-		}
-		return nil
-	}
-
-	if err := m.marshal(v); err != nil {
-		return errorf(fn, err)
-	}
-	return nil
 }
 
 // marshal converts a single value to its TOML representation.
@@ -108,6 +154,29 @@ func (m *marshaler) marshal(v reflect.Value) error {
 	return nil
 }
 
+// marshalValue handles top-level value dispatch based on type.
+// For maps, it maintains the table path context for proper TOML structure.
+// Other types are marshaled directly as values.
+func (m *marshaler) marshalValue(v reflect.Value, path []string) error {
+	const fn = "marshaler.marshalValue"
+
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
+	if v.Kind() == reflect.Map {
+		if err := m.marshalMap(v, path); err != nil {
+			return errorf(fn, err)
+		}
+		return nil
+	}
+
+	if err := m.marshal(v); err != nil {
+		return errorf(fn, err)
+	}
+	return nil
+}
+
 // marshalMap converts a map to TOML format, handling both tables and key-value pairs.
 // For table context (non-nil path), it generates appropriate table headers.
 // Keys are processed in sorted order for consistent output.
@@ -122,7 +191,7 @@ func (m *marshaler) marshalMap(v reflect.Value, path []string) error {
 	sortedKeys := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if k.Kind() != reflect.String {
-			return errorf(fn, fmt.Errorf(errInvalidKey), "non-string key")
+			return errorf(fn, fmt.Errorf(errInvalidKey), errInvalidString)
 		}
 		key := k.String()
 		if !isValidKey(key) {
@@ -168,13 +237,13 @@ func (m *marshaler) marshalMap(v reflect.Value, path []string) error {
 			}
 		}
 		// Add single newline after basic key-values if non-empty tables follow
-		if lenNotEmpty(tables) > 0 {
+		if lenNonEmpty(tables) > 0 {
 			m.buffer.WriteByte('\n')
 		}
 	}
 
 	// Write tables
-	if lenNotEmpty(tables) > 0 {
+	if lenNonEmpty(tables) > 0 {
 		// Process each table
 		first := true
 		for _, key := range sortedKeys {
@@ -309,7 +378,7 @@ func (m *marshaler) marshalBool(b bool) error {
 }
 
 // lenNotEmpty returns count of non-empty tables
-func lenNotEmpty(tables map[string]reflect.Value) int {
+func lenNonEmpty(tables map[string]reflect.Value) int {
 	count := 0
 	for _, v := range tables {
 		if v.Len() > 0 {

@@ -115,7 +115,7 @@ func isBareKeyChar(r rune) bool {
 // Returns error if string contains whitespace or special characters.
 func validateBareString(s string) error {
 	if strings.ContainsAny(s, " \t\n\r\"\\#=[]") {
-		return fmt.Errorf(errInvalidString)
+		return errorf("validateBareString", fmt.Errorf(errInvalidString), s)
 	}
 	return nil
 }

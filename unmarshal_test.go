@@ -9,7 +9,7 @@ func TestUnmarshal(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		expected map[string]interface{}
+		expected map[string]any
 		wantErr  bool
 	}{
 		{
@@ -18,7 +18,7 @@ func TestUnmarshal(t *testing.T) {
 num = 42
 float = 3.14
 bool = true`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"str":   "hello",
 				"num":   int64(42),
 				"float": 3.14,
@@ -29,7 +29,7 @@ bool = true`,
 		{
 			name:     "empty document",
 			input:    "",
-			expected: map[string]interface{}{},
+			expected: map[string]any{},
 			wantErr:  false,
 		},
 		{
@@ -46,15 +46,15 @@ pass = "secret"
 [database.replica]
 user = "readonly"
 enabled = true`,
-			expected: map[string]interface{}{
-				"database": map[string]interface{}{
+			expected: map[string]any{
+				"database": map[string]any{
 					"host": "localhost",
 					"port": int64(5432),
-					"primary": map[string]interface{}{
+					"primary": map[string]any{
 						"user": "admin",
 						"pass": "secret",
 					},
-					"replica": map[string]interface{}{
+					"replica": map[string]any{
 						"user":    "readonly",
 						"enabled": true,
 					},
@@ -69,7 +69,7 @@ strings = ["a", "hello world", bare_string]
 numbers = [1, -2, 3]
 floats = [1.1, -2.2, 3.3]
 bools = [true, false, true]`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"strings": []string{"a", "hello world", "bare_string"},
 				"numbers": []int64{1, -2, 3},
 				"floats":  []float64{1.1, -2.2, 3.3},
@@ -84,13 +84,13 @@ server.host = "example.com"
 server.port = 8080
 database.credentials.username = "admin"
 database.credentials.password = "secret"`,
-			expected: map[string]interface{}{
-				"server": map[string]interface{}{
+			expected: map[string]any{
+				"server": map[string]any{
 					"host": "example.com",
 					"port": int64(8080),
 				},
-				"database": map[string]interface{}{
-					"credentials": map[string]interface{}{
+				"database": map[string]any{
+					"credentials": map[string]any{
 						"username": "admin",
 						"password": "secret",
 					},
@@ -109,10 +109,10 @@ key1 = "value1"  # Inline comment
 
 [section]  # Section comment
 key3 = true  # Boolean comment`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"key1": "value1",
 				"key2": int64(42),
-				"section": map[string]interface{}{
+				"section": map[string]any{
 					"key3": true,
 				},
 			},
@@ -125,7 +125,7 @@ str1 = "tab:\t"
 str2 = "newline:\n"
 str3 = "quote:\"" 
 str4 = "backslash:\\"`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"str1": "tab:\t",
 				"str2": "newline:\n",
 				"str3": "quote:\"",
@@ -135,6 +135,24 @@ str4 = "backslash:\\"`,
 		},
 	}
 
+	// Run positive tests
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got map[string]any
+			err := Unmarshal([]byte(tt.input), &got)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("Unmarshal()\ngot  = %#v\nwant = %#v", got, tt.expected)
+			}
+		})
+	}
+
+	// Error test cases
 	errorTests := []struct {
 		name  string
 		input string
@@ -165,27 +183,9 @@ str4 = "backslash:\\"`,
 		},
 	}
 
-	// Run positive tests
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var got map[string]interface{}
-			err := Unmarshal([]byte(tt.input), &got)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !reflect.DeepEqual(got, tt.expected) {
-				t.Errorf("Unmarshal()\ngot  = %#v\nwant = %#v", got, tt.expected)
-			}
-		})
-	}
-
-	// Run error tests
 	for _, tt := range errorTests {
 		t.Run(tt.name, func(t *testing.T) {
-			var got map[string]interface{}
+			var got map[string]any
 			if err := Unmarshal([]byte(tt.input), &got); err == nil {
 				t.Errorf("Unmarshal() expected error for input: %s", tt.input)
 			}
@@ -197,7 +197,7 @@ func TestUnmarshalEdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
-		target  interface{}
+		target  any
 		wantErr bool
 	}{
 		{
@@ -209,7 +209,7 @@ func TestUnmarshalEdgeCases(t *testing.T) {
 		{
 			name:    "non-pointer target",
 			input:   `key = "value"`,
-			target:  map[string]interface{}{},
+			target:  map[string]any{},
 			wantErr: true,
 		},
 		{

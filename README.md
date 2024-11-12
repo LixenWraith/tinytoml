@@ -40,7 +40,7 @@ go get github.com/LixenWraith/tinytoml
 ### Implementation Choices
 
 - Follows encoding/json-style interface for Marshal/Unmarshal
-- Supports both struct tags and map storage
+- Supports any type for stroage and struct tags
 - Recursive handling of nested structures
 - Type conversion follows Go's standard rules
 - Keys must contain only ASCII letters, digits, underscore, and hyphen

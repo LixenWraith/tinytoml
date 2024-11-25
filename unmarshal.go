@@ -25,7 +25,7 @@ func Unmarshal(data []byte, v any) error {
 	}
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
-		return errorf(fn, fmt.Errorf(errInvalidTarget))
+		return errorf(fn, fmt.Errorf(errInvalidTarget), "type", reflect.TypeOf(rv).String(), "value", reflect.ValueOf(rv).String())
 	}
 
 	result := make(map[string]any)
@@ -50,7 +50,7 @@ func Unmarshal(data []byte, v any) error {
 			if m, ok := next.(map[string]any); ok {
 				current = m
 			} else {
-				return nil, errorf(fn, fmt.Errorf(errInvalidFormat))
+				return nil, errorf(fn, fmt.Errorf(errInvalidFormat), "type", reflect.TypeOf(m).String(), "value", reflect.ValueOf(m).String())
 			}
 		}
 		return current, nil // Return the current map instead of error
@@ -59,7 +59,13 @@ func Unmarshal(data []byte, v any) error {
 	for lineNum, l := range lines {
 		tokens, err := tokenizeLine(string(l))
 		if err != nil {
-			return errorf(fn, err, fmt.Sprintf("line %d", lineNum+1))
+			return errorf(fn, err, append([]string{fmt.Sprintf("line %d", lineNum+1), "tokens"}, func(t []token) []string {
+				v := make([]string, len(t))
+				for i, tt := range t {
+					v[i] = tt.value
+				}
+				return v
+			}(tokens)...)...)
 		}
 
 		// Skip empty lines
@@ -276,7 +282,7 @@ func tokenizeLine(line string) ([]token, error) {
 		tableName := strings.TrimSpace(line[1 : len(line)-1])
 		segments, err := getTableSegments(tableName)
 		if err != nil {
-			return nil, errorf(fn, err)
+			return nil, errorf(fn, err, "table name", tableName)
 		}
 		return []token{{typ: tokenTable, value: strings.Join(segments, ".")}}, nil
 	}

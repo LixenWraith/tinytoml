@@ -2,7 +2,6 @@ package tinytoml
 
 import (
 	"bytes"
-	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -268,14 +267,6 @@ tag_list = ["a", "b", "c"]
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := Marshal(test.input)
-
-			/*
-				fmt.Printf("got  bytes: %v\n", []byte(result))
-				fmt.Printf("want bytes: %v\n", []byte(test.expected))
-			*/
-
-			fmt.Println([]byte(test.expected))
-			fmt.Println([]byte(result))
 
 			if test.wantErr {
 				if err == nil {

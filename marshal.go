@@ -22,10 +22,19 @@ func Marshal(v any) ([]byte, error) {
 		return nil, errorf(fn, fmt.Errorf(errNilValue))
 	}
 
-	input := getBareValue(reflect.ValueOf(v))
+	input := reflect.ValueOf(v)
+	if !input.IsValid() {
+		return nil, errorf(fn, fmt.Errorf(errNilValue))
+	}
+
+	if isUnsupportedType(input.Kind()) {
+		return nil, errorf(fn, fmt.Errorf(errUnsupported))
+	}
+
+	input = getBareValue(input)
 
 	if input.Kind() != reflect.Struct && input.Kind() != reflect.Map {
-		return nil, errorf(fn, fmt.Errorf(errUnsupported))
+		return nil, errorf(fn, fmt.Errorf(errUnsupported), "type", reflect.TypeOf(input).String(), "value", reflect.ValueOf(input).String())
 	}
 
 	m := &marshaller{
@@ -35,7 +44,7 @@ func Marshal(v any) ([]byte, error) {
 	}
 
 	if err := m.marshalValue(input); err != nil {
-		return m.buffer.Bytes(), errorf(fn, err)
+		return m.buffer.Bytes(), errorf(fn, err, "type", reflect.TypeOf(input).String(), "value", reflect.ValueOf(input).String())
 	}
 	return m.buffer.Bytes(), nil
 }
@@ -55,40 +64,40 @@ func (m *marshaller) marshalValue(v reflect.Value) error {
 	fn := runtime.FuncForPC(pc).Name()
 
 	if isUnsupportedType(getBareValue(v).Kind()) {
-		return errorf(fn, fmt.Errorf(errUnsupported))
+		return errorf(fn, fmt.Errorf(errUnsupported), "type", reflect.TypeOf(v).String())
 	}
 
 	switch v.Kind() {
 	case reflect.Struct:
 		if err := m.marshalStruct(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	case reflect.Map:
 		if err := m.marshalMap(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	case reflect.Slice, reflect.Array:
 		if err := m.marshalSlice(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	case reflect.String:
 		if err := m.marshalString(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		if err := m.marshalInt(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	case reflect.Float32, reflect.Float64:
 		if err := m.marshalFloat(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	case reflect.Bool:
 		if err := m.marshalBool(v); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 		}
 	default:
-		return errorf(fn, fmt.Errorf(errUnsupported))
+		return errorf(fn, fmt.Errorf(errUnsupported), "type", reflect.TypeOf(v).String(), "value", reflect.ValueOf(v).String())
 	}
 	return nil
 }
@@ -191,11 +200,11 @@ func (m *marshaller) marshalMap(v reflect.Value) error {
 	keys := v.MapKeys()
 	for _, k := range keys {
 		if k.Kind() != reflect.String {
-			return errorf(fn, fmt.Errorf(errInvalidKey), errInvalidString)
+			return errorf(fn, fmt.Errorf(errInvalidKey), errInvalidString, "type", reflect.TypeOf(k).String(), "value", reflect.ValueOf(k).String())
 		}
 		key := k.String()
 		if !isValidKey(key) {
-			return errorf(fn, fmt.Errorf(errInvalidKey), key)
+			return errorf(fn, fmt.Errorf(errInvalidKey), "key", key)
 		}
 		if hasNestedValue(getBareValue(v.MapIndex(k))) {
 			sortedNestedKeys = append(sortedNestedKeys, key)
@@ -212,7 +221,7 @@ func (m *marshaller) marshalMap(v reflect.Value) error {
 		m.buffer.WriteString(key)
 		m.buffer.WriteString(" = ")
 		if err := m.marshalValue(value); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(value).String(), "value", reflect.ValueOf(value).String())
 		}
 		m.buffer.WriteString("\n")
 	}
@@ -227,7 +236,7 @@ func (m *marshaller) marshalMap(v reflect.Value) error {
 		value := getBareValue(v.MapIndex(reflect.ValueOf(key)))
 
 		if err := m.marshalValue(value); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(value).String(), "value", reflect.ValueOf(value).String())
 		}
 		m.popLevel()
 	}
@@ -254,14 +263,14 @@ func (m *marshaller) marshalSlice(v reflect.Value) error {
 
 		elem := getBareValue(v.Index(i))
 		if isUnsupportedType(elem.Kind()) {
-			return errorf(fn, fmt.Errorf(errUnsupported))
+			return errorf(fn, fmt.Errorf(errUnsupported), "type", reflect.TypeOf(elem).String(), "value", reflect.ValueOf(elem).String())
 		}
 		if elem.Kind() == reflect.Map || elem.Kind() == reflect.Struct {
-			return errorf(fn, fmt.Errorf(errUnsupported))
+			return errorf(fn, fmt.Errorf(errUnsupported), "type", reflect.TypeOf(elem).String(), "value", reflect.ValueOf(elem).String())
 		}
 
 		if err := m.marshalValue(elem); err != nil {
-			return errorf(fn, err)
+			return errorf(fn, err, "type", reflect.TypeOf(elem).String(), "value", reflect.ValueOf(elem).String())
 		}
 	}
 

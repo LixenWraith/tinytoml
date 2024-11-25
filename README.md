@@ -1,26 +1,22 @@
 # TinyTOML
 
-A minimal TOML parser and encoder for Go. TinyTOML provides a lightweight implementation focusing on the most commonly used TOML features while maintaining strict parsing rules.
-
-The package is designed with simplicity and predictability in mind, to be used for the small/medium size app configuration file management. The limitations and deviations from TOML specs are outlined under the implementation details section below.
+A minimal TOML parser and encoder for Go that focuses on common configuration needs while maintaining strict TOML compatibility within its supported feature set.
 
 ## Features
 
-- Basic TOML types support:
-  - Strings (bare and quoted)
-  - Numbers (integers and floats)
+- Basic TOML types:
+  - Strings with escape sequences (\n, \t, \r, \\)
+  - Numbers (integers and floats, with sign support)
   - Booleans
-  - Arrays (homogeneous type only)
-- Table/group nesting with dot notation
-- Struct-based configuration handling with TOML tags
-- Basic string escape sequences (`\"`, `\t`, `\n`, `\r`, `\\`)
-- Comment support (both inline `#` and full-line)
+  - Arrays (homogeneous, nested, and mixed-type)
+- Tables with dot notation
+- Dotted keys within tables
+- Table merging (last value wins)
+- Struct tags (`toml:`) for custom field names
+- Comment handling (inline and full-line)
 - Flexible whitespace handling
-- Strict parsing rules:
-  - Integer overflow detection
-  - Number format validation
-  - String format validation
-  - Duplicate key detection (first occurrence wins)
+- Type conversion following Go's standard rules
+- Strict parsing rules with detailed error messages
 
 ## Installation
 
@@ -30,43 +26,39 @@ go get github.com/LixenWraith/tinytoml
 
 ## Implementation Details
 
-### Spec Deviations
+### Limitations
 
-- Arrays must be homogeneous (single type elements only)
-- First occurrence of a key wins, subsequent duplicates ignored
-- Table headers are merged, not overwritten
-- Numbers with multiple dots are parsed as strings
+- No support for:
+  - Table arrays
+  - Hex/octal/binary/exponential number formats
+  - Plus sign in front of numbers
+  - Multi-line keys or strings
+  - Inline table declarations
+  - Inline array declarations within tables
+  - Empty table declarations
+  - Datetime types
+  - Unicode escape sequences
+  - Key character escaping
+  - Literal strings (single quotes)
+  - Comments are discarded during parsing
 
 ### Implementation Choices
 
 - Follows encoding/json-style interface for Marshal/Unmarshal
-- Supports any type for stroage and struct tags
+- Maps must have string keys
+- Keys must start with letter/underscore, followed by letters/numbers/dashes/underscores
+- Strings are always double-quoted
 - Recursive handling of nested structures
-- Type conversion follows Go's standard rules
-- Keys must contain only ASCII letters, digits, underscore, and hyphen
-- String values must be quoted if they contain spcee or any of special characters `,#=[]`
-- String values can be unquoted if they contain only ASCII letters, digits, underscore, and hyphen
-- Escape sequences in strings: `\", \t, \n, \r, \\`
-- Integers checked for int64 bounds
-
-### Unsupported Features
-
-- Date/time formats
-- Hex/octal/binary numbers
-- Scientific notation
-- Multi-line strings
-- Inline tables
-- Array of tables
-- Unicode escapes
-- +/- inf and nan floats
+- Integer bounds checking
+- Float format validation
+- Detailed error reporting
 
 ## Usage
 
-### Roundtrip conversion
+### Basic Example
 
 ```go
 package main
-
 
 import (
     "fmt"
@@ -76,54 +68,48 @@ import (
 
 func main() {
     input := `
-# Basic key/values
-
-name = "MyApp"
-port = 8080
+name = "Complex \nApp"
 debug = true
+workers = 42
+rate = 3.14
 
-# Arrays
-hosts = ["localhost", "backup.local"]
+# Array examples
+ports = [8080, -6379]
+hosts = ["local host", "bare_host"]
 
-# Tables
-[database]
+[server]
 host = "localhost"
-port = 5432
+port = 8080
 
+[database.primary]
+host = "db1"
+host.ip = "1.1.1.1"
+host.port = 5432`
 
-# Nested tables
-[services.cache]
-host = "redis.local"
-port = 6379
-`
-
-    // Parse TOML
     var data any
     if err := tinytoml.Unmarshal([]byte(input), &data); err != nil {
         log.Fatal(err)
     }
 
-    fmt.Printf("Parsed data:\n%+v\n\n", data)
-
-    // Marshal back to TOML
     output, err := tinytoml.Marshal(data)
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Printf("\nGenerated TOML:\n%s", output)
+    fmt.Printf("Generated TOML:\n%s", output)
 }
 ```
 
-### Practical Example: Configuration Management
+### Configuration Management
 
-TinyTOML can be used effectively for application configuration management. Here's a practical example of managing server configuration:
+TinyTOML is particularly useful for application configuration. Here's a typical usage pattern:
 
 ```go
 type ServerConfig struct {
     Server struct {
         Host string `toml:"host"`
         Port int    `toml:"port"`
+        Name string `toml:"name"`
     } `toml:"server"`
     
     Database struct {
@@ -135,65 +121,51 @@ type ServerConfig struct {
 }
 
 func main() {
-    // Load or create config
+    var config ServerConfig
+    
+    // Load existing config or use defaults
     if data, err := os.ReadFile("config.toml"); err == nil {
-        // Load existing config and merge with defaults
         if err := tinytoml.Unmarshal(data, &config); err != nil {
             log.Fatal(err)
         }
     } else {
-        // Create new config with defaults
         config = getDefaultConfig()
     }
 
-    // Save complete config
-    data, _ := tinytoml.Marshal(config)
+    // Save config
+    data, err := tinytoml.Marshal(config)
+    if err != nil {
+        log.Fatal(err)
+    }
     os.WriteFile("config.toml", data, 0644)
 }
 ```
 
-This pattern creates, or loads and rewrites a config file, a config file like:
-
-```toml
-[server]
-host = "localhost"
-port = 8080
-
-[database]
-host = "localhost"
-port = 5432
-user = "dbuser"
-password = "dbpass"
-```
-
-See [examples/roundtrip/main.go] and [examples/default_config/main.go] and [examples/comparison_json/main.go] for complete working examples.
+See [examples/] directory for more comprehensive examples including:
+- Basic roundtrip conversion
+- Default configuration management
+- JSON/TOML configuration comparison
 
 ## API
 
-### `Unmarshal(data []byte, v any) error`
-Parses TOML data into a the provided type (struct or map)
-
 ### `Marshal(v any) ([]byte, error)`
-Converts a Go struct to TOML format
+Converts a Go value into TOML format. Supports structs, maps (with string keys), and basic types.
+
+### `Unmarshal(data []byte, v any) error`
+Parses TOML data into a Go value. Target must be a pointer to a struct or map.
 
 ## Error Handling
 
-TinyTOML provides detailed error messages:
+TinyTOML provides error messages with context:
 
 ```go
-var err error
+unmarshalErr := tinytoml.Unmarshal([]byte("[invalid table]"), &data)
+// github.com/LixenWraith/tinytoml.tokenizeLine: invalid table name [line 1]
 
-err = tinytoml.Unmarshal([]byte(input), &data)
-
-output, err = tinytoml.Marshal(data)
-```
-
-```
-2024/11/11 16:16:24 Unmarshal error: Unmarshal: parser.parse: parser.parseLine: parser.parseArrayElements: type mismatch in array [element 1] [key "key"] [line 2]
-2024/11/11 16:16:24 Marshal error: Marshal: anyToMap: unsupported type
+marshalErr := tinytoml.Marshal(make(chan int))
+// github.com/LixenWraith/tinytoml.Marshal: unsupported type
 ```
 
 ## License
 
 MIT License - see LICENSE file
-

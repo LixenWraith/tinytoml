@@ -1,27 +1,23 @@
 [api]
-cors_origins = [http://localhost:3000, https://app.example.com]
-prefix = /api/v1
+cors_origins = ["http://localhost:3000", "https://app.example.com"]
+prefix = "/api/v1"
 rate_limit = 100
 timeout = 30
-
 [database]
-host = localhost
-name = appdb
-password = dbpass
+host = "localhost"
+name = "appdb"
+password = "dbpass"
 port = 5432
-user = dbuser
-
+user = "dbuser"
 [database.pool]
 max_idle = 5
 max_open = 10
-
 [server]
-host = localhost
-mode = development
-name = app-server
+host = "localhost"
+mode = "development"
+name = "app-server"
 port = 8080
-
 [tls]
-cert_file = cert/server.crt
+cert_file = "cert/server.crt"
 enabled = false
-key_file = cert/server.key
+key_file = "cert/server.key"

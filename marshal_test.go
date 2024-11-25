@@ -1,219 +1,436 @@
 package tinytoml
 
 import (
+	"bytes"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestMarshal(t *testing.T) {
+	pc, _, _, _ := runtime.Caller(0)
+	fn := runtime.FuncForPC(pc).Name()
+
+	type Simple struct {
+		Name   string
+		Count  int
+		Active bool
+	}
+
+	type Nested struct {
+		Info    Simple
+		Tags    []string
+		Numbers []int
+	}
+
+	type Complex struct {
+		Basic    Simple
+		Details  Nested
+		Matrix   [][]int
+		Settings map[string]any
+	}
+
 	tests := []struct {
 		name     string
-		input    map[string]any
+		input    any
 		expected string
 		wantErr  bool
+		errormsg string
 	}{
 		{
-			name: "basic types",
+			name: "marshal any value",
 			input: map[string]any{
-				"str":   "hello",
-				"num":   int64(42),
-				"float": 3.14,
-				"bool":  true,
+				"Foo":  "Ba\nr",
+				"Bar":  true,
+				"Baz":  12,
+				"Jazz": 19.5924,
 			},
-			expected: "bool = true\nfloat = 3.14\nnum = 42\nstr = hello\n",
+			expected: "Bar = true\nBaz = 12\nFoo = \"Ba\\nr\"\nJazz = 19.5924\n",
 			wantErr:  false,
+			errormsg: "",
 		},
 		{
-			name:     "empty map",
+			name: "marshal sort values",
+			input: map[string]string{
+				"Foo": "Bar",
+				"Bar": "Foo",
+			},
+			expected: "Bar = \"Foo\"\nFoo = \"Bar\"\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal number value",
+			input: map[string]any{
+				"Fizz": 64,
+			},
+			expected: `Fizz = 64
+`,
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name:     "marshal empty map",
 			input:    map[string]any{},
 			expected: "",
 			wantErr:  false,
+			errormsg: "",
 		},
 		{
-			name: "nested tables",
+			name: "marshal nested map",
 			input: map[string]any{
-				"database": map[string]any{
-					"host": "localhost",
-					"port": int64(5432),
-					"primary": map[string]any{
-						"user": "admin",
-						"pass": "secret",
+				"Foo": map[string]any{
+					"Bar": "Baz",
+					"Baz": "Bar",
+				},
+			},
+			expected: "[Foo]\nBar = \"Baz\"\nBaz = \"Bar\"\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal deep nested map",
+			input: map[string]any{
+				"Foo": map[string]any{
+					"FooBar": map[string]any{
+						"Bar": "Baz",
+						"Baz": "Bar",
 					},
 				},
 			},
-			expected: `[database]
-host = localhost
-port = 5432
-
-[database.primary]
-pass = secret
-user = admin
-`,
-			wantErr: false,
+			expected: "[Foo]\n[Foo.FooBar]\nBar = \"Baz\"\nBaz = \"Bar\"\n",
+			wantErr:  false,
+			errormsg: "",
 		},
 		{
-			name: "arrays of different types",
+			name: "marshal complex nested map",
 			input: map[string]any{
-				"strings": []string{"a", "hello world", "bare_string"},
-				"numbers": []int64{1, -2, 3},
-				"floats":  []float64{1.1, -2.2, 3.3},
-				"bools":   []bool{true, false, true},
+				"Foo": map[string]any{
+					"Fizz": 12,
+					"Jazz": "Buzz",
+					"FooBar": map[string]any{
+						"Bar": "Baz",
+						"Baz": "Bar",
+					},
+				},
 			},
-			expected: `bools = [true, false, true]
-floats = [1.1, -2.2, 3.3]
-numbers = [1, -2, 3]
-strings = [a, "hello world", bare_string]
-`,
-			wantErr: false,
+			expected: "[Foo]\nFizz = 12\nJazz = \"Buzz\"\n[Foo.FooBar]\nBar = \"Baz\"\nBaz = \"Bar\"\n",
+			wantErr:  false,
+			errormsg: "",
 		},
 		{
-			name: "special string cases",
-			input: map[string]any{
-				"empty":     "",
-				"spaces":    "hello world",
-				"tabs":      "tab\there",
-				"newlines":  "line\nbreak",
-				"quotes":    "\"quoted\"",
-				"backslash": "back\\slash",
-				"true":      "true",  // should be quoted
-				"false":     "false", // should be quoted
-				"number":    "42",    // should be quoted
-				"bare":      "simple",
+			name: "marshal simple struct",
+			input: Simple{
+				Name:   "test",
+				Count:  42,
+				Active: true,
 			},
-			expected: `backslash = "back\\slash"
-bare = simple
-empty = ""
-false = "false"
-newlines = "line\nbreak"
-number = "42"
-quotes = "\"quoted\""
-spaces = "hello world"
-tabs = "tab\there"
-true = "true"
-`,
-			wantErr: false,
+			expected: "Active = true\nCount = 42\nName = \"test\"\n",
+			wantErr:  false,
+			errormsg: "",
 		},
 		{
-			name: "deep nesting",
-			input: map[string]any{
-				"a": map[string]any{
-					"key": "value1",
+			name: "marshal simple array",
+			input: map[string][]string{
+				"Tags": {"one", "two", "three"},
+			},
+			expected: "Tags = [\"one\", \"two\", \"three\"]\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal nested struct",
+			input: Nested{
+				Info: Simple{
+					Name:   "nested",
+					Count:  123,
+					Active: false,
 				},
-				"m": map[string]any{
-					"key": "value2",
+				Tags:    []string{"tag1", "tag2"},
+				Numbers: []int{1, 2, 3},
+			},
+			expected: "Numbers = [1, 2, 3]\nTags = [\"tag1\", \"tag2\"]\n[Info]\nActive = false\nCount = 123\nName = \"nested\"\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal nested arrays",
+			input: map[string][][]int{
+				"Matrix": {{1, 2}, {3, 4}, {5, 6}},
+			},
+			expected: "Matrix = [[1, 2], [3, 4], [5, 6]]\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal complex nested struct",
+			input: Complex{
+				Basic: Simple{
+					Name:   "root",
+					Count:  100,
+					Active: true,
 				},
-				"z": map[string]any{
-					"key": "value3",
+				Details: Nested{
+					Info: Simple{
+						Name:   "detail",
+						Count:  50,
+						Active: false,
+					},
+					Tags:    []string{"important", "critical"},
+					Numbers: []int{10, 20, 30},
+				},
+				Matrix: [][]int{{1, 2}, {3, 4}},
+				Settings: map[string]any{
+					"Enabled": true,
+					"Port":    8080,
 				},
 			},
-			expected: `[a]
-key = value1
-
-[m]
-key = value2
-
-[z]
-key = value3
+			expected: "Matrix = [[1, 2], [3, 4]]\n[Basic]\nActive = true\nCount = 100\nName = \"root\"\n[Details]\nNumbers = [10, 20, 30]\nTags = [\"important\", \"critical\"]\n[Details.Info]\nActive = false\nCount = 50\nName = \"detail\"\n[Settings]\nEnabled = true\nPort = 8080\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal struct with TOML tags and nesting",
+			input: struct {
+				Basic struct {
+					Name    string `toml:"name"`
+					Ignored string `toml:"-"`
+					Value   int
+				} `toml:"basic_config"`
+				Details struct {
+					Tags    []string `toml:"tag_list"`
+					Active  bool     `toml:"enabled"`
+					Hidden  bool     `toml:"-"`
+					Default string
+				} `toml:"detail_config"`
+			}{
+				Basic: struct {
+					Name    string `toml:"name"`
+					Ignored string `toml:"-"`
+					Value   int
+				}{
+					Name:    "test",
+					Ignored: "hidden",
+					Value:   42,
+				},
+				Details: struct {
+					Tags    []string `toml:"tag_list"`
+					Active  bool     `toml:"enabled"`
+					Hidden  bool     `toml:"-"`
+					Default string
+				}{
+					Tags:    []string{"a", "b", "c"},
+					Active:  true,
+					Hidden:  true,
+					Default: "default",
+				},
+			},
+			expected: `[basic_config]
+name = "test"
+Value = 42
+[detail_config]
+Default = "default"
+enabled = true
+tag_list = ["a", "b", "c"]
 `,
-			wantErr: false,
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal mixed array",
+			input: map[string]any{
+				"Mixed": []any{"string", 42, 3.14, true},
+			},
+			expected: "Mixed = [\"string\", 42, 3.14, true]\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name: "marshal array with unsupported type",
+			input: map[string]any{
+				"Invalid": []any{"string", map[string]string{"key": "value"}},
+			},
+			expected: "",
+			wantErr:  true,
+			errormsg: errUnsupported,
 		},
 	}
 
-	// Run positive tests
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := Marshal(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Marshal() error = %v, wantErr %v", err, tt.wantErr)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := Marshal(test.input)
+
+			/*
+				fmt.Printf("got  bytes: %v\n", []byte(result))
+				fmt.Printf("want bytes: %v\n", []byte(test.expected))
+			*/
+
+			if test.wantErr {
+				if err == nil {
+					t.Errorf("-- %s failed: want error but got none.\n- input: %v\n- want: %s\n- got : %s\n\n", fn, test.input, test.expected, result)
+					return
+				}
+
+				if !strings.Contains(err.Error(), test.errormsg) {
+					t.Errorf("-- %s failed: got wrong error.\n- input: %v\n- want: %s\n- got: %s\n- error: %s\n\n", fn, test.input, test.expected, result, err.Error())
+					return
+				}
 				return
 			}
 
-			gotStr := string(got)
-			if gotStr != tt.expected {
-				t.Errorf("Marshal() \ngot  = %#v\nwant = %#v", gotStr, tt.expected)
-			}
-
-			// Verify round trip
-			var unmarshaled map[string]any
-			if err := Unmarshal(got, &unmarshaled); err != nil {
-				t.Errorf("Round trip unmarshal failed: %v", err)
+			if err != nil {
+				t.Errorf("-- %s failed: want no error but got one.\n- input: %v\n- want: %s\n- got : %s\n- error: %s\n\n", fn, test.input, test.expected, result, err.Error())
 				return
 			}
 
-			if !reflect.DeepEqual(unmarshaled, tt.input) {
-				t.Errorf("Round trip failed:\noriginal  = %#v\nround trip = %#v", tt.input, unmarshaled)
-			}
-		})
-	}
-
-	// Error test cases
-	errorTests := []struct {
-		name  string
-		input any
-	}{
-		{
-			name:  "nil value",
-			input: nil,
-		},
-		{
-			name: "invalid key type",
-			input: map[int]string{
-				1: "value",
-			},
-		},
-		{
-			name: "unsupported type",
-			input: map[string]any{
-				"channel": make(chan int),
-			},
-		},
-		{
-			name: "invalid nested type",
-			input: map[string]any{
-				"nested": struct{}{},
-			},
-		},
-	}
-
-	for _, tt := range errorTests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Marshal(tt.input); err == nil {
-				t.Errorf("Marshal() expected error for input: %#v", tt.input)
+			if string(result) != test.expected {
+				t.Errorf("-- %s failed: wrong result.\n- input: %v\n- want: %s\n- got: %s\n\n", fn, test.input, test.expected, result)
+				return
 			}
 		})
 	}
 }
 
-func TestMarshalTableOrder(t *testing.T) {
-	input := map[string]any{
-		"z": map[string]any{
-			"key": "value3",
+func Test_isUnsupportedTypeError(t *testing.T) {
+	pc, _, _, _ := runtime.Caller(0)
+	fn := runtime.FuncForPC(pc).Name()
+
+	tests := []struct {
+		name     string
+		input    any
+		expected string
+		wantErr  bool
+		errormsg string
+	}{
+		{
+			name:     "marshal nil",
+			input:    nil,
+			expected: "",
+			wantErr:  true,
+			errormsg: errNilValue,
 		},
-		"a": map[string]any{
-			"key": "value1",
-		},
-		"m": map[string]any{
-			"key": "value2",
+		{
+			name:     "marshal unsupported type",
+			input:    make(chan int),
+			expected: "",
+			wantErr:  true,
+			errormsg: errUnsupported,
 		},
 	}
 
-	got, err := Marshal(input)
-	if err != nil {
-		t.Fatalf("Marshal() error = %v", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := Marshal(test.input)
+
+			if test.wantErr {
+				if err == nil {
+					t.Errorf("-- %s failed: want error but got none.\n- input: %v\n- want: %s\n- got : %s\n\n", fn, test.input, test.expected, result)
+					return
+				}
+
+				if !strings.Contains(err.Error(), test.errormsg) {
+					t.Errorf("-- %s failed: got wrong error.\n- input: %v\n- want: %s\n- got: %s\n- error: %s\n\n", fn, test.input, test.expected, result, err.Error())
+					return
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("-- %s failed: want no error but got one.\n- input: %v\n- want: %s\n- got : %s\n- error: %s\n\n", fn, test.input, test.expected, result, err.Error())
+				return
+			}
+
+			if string(result) != test.expected {
+				t.Errorf("-- %s failed: wrong result.\n- input: %v\n- want: %s\n- got: %s\n\n", fn, test.input, test.expected, result)
+				return
+			}
+		})
+	}
+}
+
+func Test_marshaller_marshalString(t *testing.T) {
+	pc, _, _, _ := runtime.Caller(0)
+	fn := runtime.FuncForPC(pc).Name()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		wantErr  bool
+		errormsg string
+	}{
+		{
+			name:     "simple string",
+			input:    "hello",
+			expected: "\"hello\"",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name:     "string with escape characters",
+			input:    "hello\tworld\n",
+			expected: "\"hello\\tworld\\n\"",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name:     "string with quotes",
+			input:    `hello "world"`,
+			expected: `"hello \"world\""`,
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name:     "string with backslash",
+			input:    `hello\world`,
+			expected: `"hello\\world"`,
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name:     "string with multiple escapes",
+			input:    "tab:\t newline:\n quote:\" backslash:\\",
+			expected: "\"tab:\\t newline:\\n quote:\\\" backslash:\\\\\"",
+			wantErr:  false,
+			errormsg: "",
+		},
 	}
 
-	// Verify tables are in alphabetical order
-	lines := strings.Split(string(got), "\n")
-	var tables []string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "[") {
-			tables = append(tables, line)
-		}
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := &marshaller{
+				buffer: &bytes.Buffer{},
+				path:   []string{},
+				depth:  0,
+			}
 
-	expected := []string{"[a]", "[m]", "[z]"}
-	if !reflect.DeepEqual(tables, expected) {
-		t.Errorf("Marshal() table order incorrect\ngot = %v\nwant = %v", tables, expected)
+			err := m.marshalString(reflect.ValueOf(test.input))
+
+			result := m.buffer.String()
+
+			if test.wantErr {
+				if err == nil {
+					t.Errorf("-- %s failed: want error but got none.\n- input: %v\n- want: %s\n- got : %s\n\n", fn, test.input, test.expected, result)
+					return
+				}
+
+				if !strings.Contains(err.Error(), test.errormsg) {
+					t.Errorf("-- %s failed: got wrong error.\n- input: %v\n- want: %s\n- got: %s\n- error: %s\n\n", fn, test.input, test.expected, result, err.Error())
+					return
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("-- %s failed: want no error but got one.\n- input: %v\n- want: %s\n- got : %s\n- error: %s\n\n", fn, test.input, test.expected, result, err.Error())
+				return
+			}
+
+			if string(result) != test.expected {
+				t.Errorf("-- %s failed: wrong result.\n- input: %v\n- want: %s\n- got: %s\n\n", fn, test.input, test.expected, result)
+				return
+			}
+		})
 	}
 }

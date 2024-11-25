@@ -81,7 +81,7 @@ func getDefaultConfig() ServerConfig {
 }
 
 func main() {
-	const configFile = "config.toml"
+	const configFile = "./examples/default_config/config.toml"
 	var config ServerConfig
 
 	// Check if config file exists and load it

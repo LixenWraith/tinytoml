@@ -8,7 +8,7 @@ import (
 func main() {
 	// Unmarshal error - invalid TOML format
 	input := `
-key = [1, "string"]  # Error: heterogeneous array
+[application server]  # Error: space inside table name not acceptable
 `
 	var data any
 	if err := tinytoml.Unmarshal([]byte(input), &data); err != nil {

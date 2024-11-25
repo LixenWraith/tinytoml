@@ -1,75 +1,80 @@
-// Package tinytoml provides a lightweight TOML (Tom's Obvious Minimal Language) parser
-// and encoder for Go. It focuses on commonly used TOML features while maintaining
-// strict parsing rules and predictable behavior.
+// Package tinytoml implements a minimalist TOML parser and encoder that supports
+// core TOML functionality while maintaining simplicity.
 //
 // Features:
-//   - Basic TOML types: strings, integers, floats, booleans, and homogeneous arrays
-//   - Nested tables with dot notation
-//   - Basic string escape sequences (\", \t, \n, \r, \)
-//   - Comment support (# for both inline and full-line)
-//   - Flexible whitespace handling
+//   - Basic value types: strings, integers, floats, booleans
+//   - Arrays of basic types, nested arrays, and mixed-type arrays
+//   - Nested tables using dotted notation
+//   - Dotted keys within tables (e.g. server.network.ip = "1.1.1.1")
+//   - Struct tags for custom field names (e.g. `toml:"name"`)
+//   - Comment handling (inline and single-line)
+//   - Whitespace tolerance
+//   - Table merging (last value wins)
+//   - Basic string escape sequences (\n, \t, \r, \\)
 //
 // Limitations:
-//   - Arrays must contain elements of the same type
-//   - No support for date/time formats
-//   - No support for hex/octal/binary numbers or scientific notation
-//   - No support for multi-line strings
-//   - No support for inline tables
-//   - No support for array of tables
-//   - No support for Unicode escapes
-//   - No support for +/- inf and nan floats
-
+//   - No support for table arrays
+//   - No support for hex, octal, binary, or exponential number formats
+//   - No support for plus sign in front of numbers
+//   - No multi-line keys or strings
+//   - No inline table declarations
+//   - No inline array declarations within tables
+//   - No empty table declarations
+//   - No datetime types
+//   - No unicode escape sequences
+//   - No key character escaping
+//   - No literal strings (single quotes)
+//   - Comments are discarded during parsing
+//
+// The package aims for simplicity over completeness, making it suitable for
+// basic configuration needs while maintaining strict TOML compatibility
+// within its supported feature set.
 package tinytoml
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
 // Error constants used throughout the package for consistent error messaging.
 const (
 	errNilValue           = "cannot marshal nil value"
+	errMissingKey         = "missing key"
+	errMissingValue       = "missing value"
 	errUnsupported        = "unsupported type"
 	errInvalidKey         = "invalid key format"
 	errInvalidValue       = "invalid value format"
 	errInvalidFormat      = "invalid TOML format"
-	errInvalidTarget      = "unmarshal target must be a pointer to map[string]any"
-	errMissingKey         = "missing key"
-	errEmptyValue         = "empty value"
+	errInvalidTarget      = "unmarshal target invalid"
 	errInvalidString      = "invalid string format"
-	errInvalidNumber      = "invalid number format"
+	errInvalidInteger     = "invalid integer format"
+	errInvalidFloat       = "invalid float format"
+	errInvalidBoolean     = "invalid boolean format"
 	errUnterminatedString = "unterminated string"
 	errUnterminatedArray  = "unterminated array"
 	errUnterminatedEscape = "unterminated escape sequence"
 	errInvalidEscape      = "invalid escape sequence"
-	errTypeMismatch       = "type mismatch in array"
-	errReadFailed         = "failed to read input"
-	errInvalidTableHeader = "invalid table header format"
 	errInvalidTableName   = "invalid table name"
 )
 
-// tableGroup represents a TOML table/group with hierarchical structure.
-// It maintains parent-child relationships and stores key-value pairs.
-type tableGroup struct {
-	name     string
-	parent   *tableGroup
-	children map[string]*tableGroup
-	values   map[string]any
+// SupportedTypes lists all Go types that can be marshaled/unmarshaled
+// Includes basic types, composites and their variants
+var SupportedTypes = []reflect.Kind{
+	reflect.Map,
+	reflect.String,
+	reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+	reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+	reflect.Float32, reflect.Float64,
+	reflect.Bool,
+	reflect.Struct,
+	reflect.Slice,
+	reflect.Array,
+	reflect.Interface,
 }
 
-// newTableGroup creates a new table group with the given name and parent reference.
-// It initializes empty maps for children and values.
-func newTableGroup(name string, parent *tableGroup) *tableGroup {
-	return &tableGroup{
-		name:     name,
-		parent:   parent,
-		children: make(map[string]*tableGroup),
-		values:   make(map[string]any),
-	}
-}
-
-// errorf wraps errors with function context and optional additional context information.
-// It creates a formatted error message that includes the function name and details.
+// errorf formats an error with optional context information
+// Prefixes the error with the calling function's name for tracing
 func errorf(fn string, err error, context ...string) error {
 	if len(context) > 0 {
 		return fmt.Errorf("%s: %v [%s]", fn, err, strings.Join(context, ", "))
@@ -77,78 +82,51 @@ func errorf(fn string, err error, context ...string) error {
 	return fmt.Errorf("%s: %v", fn, err)
 }
 
-// isValidKey checks if a key name follows TOML specification.
-// Valid keys contain only ASCII letters, digits, underscores, and hyphens,
-// must start with a letter or underscore.
-func isValidKey(key string) bool {
-	if key == "" {
-		return false
-	}
-
-	for i, r := range key {
-		if i == 0 {
-			if !isBareKeyStart(r) {
-				return false
-			}
-		} else {
-			if !isBareKeyChar(r) {
-				return false
-			}
+// isUnsupportedType checks if a reflect.Kind is not in SupportedTypes
+func isUnsupportedType(t reflect.Kind) bool {
+	for _, kind := range SupportedTypes {
+		if kind == t {
+			return false
 		}
 	}
 	return true
 }
 
-// isBareKeyStart checks if a character is valid as first character of key.
-// Only ASCII letters and underscore are valid starting characters.
-func isBareKeyStart(r rune) bool {
-	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_'
+// isAlpha checks if a character is a letter (A-Z, a-z)
+func isAlpha(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
-// isBareKeyChar checks if a character is valid within a key.
-// Valid characters include ASCII letters, digits, underscore, and hyphen.
-func isBareKeyChar(r rune) bool {
-	return isBareKeyStart(r) || (r >= '0' && r <= '9') || r == '-'
+// isNumeric checks if a character is a digit (0-9)
+func isNumeric(c rune) bool {
+	return c >= '0' && c <= '9'
 }
 
-// validateBareString checks if a string can be represented without quotes.
-// Returns error if string contains whitespace or special characters.
-func validateBareString(s string) error {
-	if strings.ContainsAny(s, " \t\n\r\"\\#=[]") {
-		return errorf("validateBareString", fmt.Errorf(errInvalidString), s)
+// isValidKey checks if a string is a valid TOML key
+// Must start with letter/underscore, followed by letters/numbers/dashes/underscores
+func isValidKey(s string) bool {
+	if len(s) == 0 {
+		return false
 	}
-	return nil
-}
 
-// splitTableKey splits a table key into parts and validates each part.
-// Returns error if any part is invalid according to TOML key rules.
-func splitTableKey(key string) ([]string, error) {
-	parts := strings.Split(key, ".")
-	for _, part := range parts {
-		if !isValidKey(part) {
-			return nil, errorf("splitTableKey", fmt.Errorf(errInvalidTableName), part)
+	firstChar := rune(s[0])
+	if !isAlpha(firstChar) && firstChar != '_' {
+		return false
+	}
+
+	for _, c := range s[1:] {
+		if !isAlpha(c) && !isNumeric(c) && c != '-' && c != '_' && c != '.' {
+			return false
 		}
 	}
-	return parts, nil
+	return true
 }
 
-// flattenTable converts nested tableGroup structure to flat map.
-// Recursively processes the table hierarchy to create a single-level map.
-func flattenTable(group *tableGroup) map[string]any {
-	result := make(map[string]any)
-
-	// Add values
-	for k, v := range group.values {
-		result[k] = v
+// getBareValue unwraps interface values to their underlying type
+func getBareValue(v reflect.Value) reflect.Value {
+	if v.Kind() == reflect.Interface {
+		return v.Elem()
+	} else {
+		return v
 	}
-
-	// Add children recursively
-	for name, child := range group.children {
-		childMap := flattenTable(child)
-		if len(childMap) > 0 {
-			result[name] = childMap
-		}
-	}
-
-	return result
 }

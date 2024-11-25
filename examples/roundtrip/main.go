@@ -9,7 +9,6 @@ import (
 func main() {
 	input := `# Basic types demonstration
 name = "Complex \nApp"    # quoted string with space
-env = production        # bare string
 debug = true           # boolean true
 maintenance = false    # boolean false
 workers = 42           # positive integer
@@ -22,7 +21,7 @@ temp = -0.5           # negative float
 ports = [8080, -6379]                      # mixed sign integers
 rates = [1.5, -2.5]                        # mixed sign floats
 flags = [true, false]                      # booleans
-hosts = ["local host", bare_host]          # mixed quoted/bare strings
+hosts = ["local host", "bare_host"]        # quoted strings
 
 # Table examples
 [server]
@@ -37,17 +36,13 @@ active = true
 # Nested tables
 [database.primary]
 host = "db1"
-ip = 2.33.45
+ip = "2.33.45.1"
 port = 5432
 
 [database.replica]
 host = "db2"
-host = "temp"         # first instance of key in the same group/subgroup is used, sebsequent definition of same key is ignored
+host = "temp"         # last instance of key in the same group/subgroup is used, sebsequent definition of same key is ignored
 port = 5433
-
-# Dotted keys (alternative to nested tables)
-queue.type = "redis"
-queue.port = 6379
 
 # Deeply nested example
 [services.cache.redis]
@@ -55,10 +50,12 @@ host = "redis1"
 port = 6379
 slaves = ["redis2", "redis3"]
 metrics = [1.1, -2.2, 1926.397247]
-features = [true, false]`
+features = [true, false]
+licenses.available = 10
+licenses.used = 15`
 
 	// Parse TOML
-	var data map[string]any
+	var data any
 	if err := tinytoml.Unmarshal([]byte(input), &data); err != nil {
 		log.Fatalf("Unmarshal failed: %v", err)
 	}
@@ -71,7 +68,7 @@ features = [true, false]`
 		log.Fatalf("Marshal failed: %v", err)
 	}
 
-	fmt.Printf("Generated TOML:\n%s\n", output)
+	fmt.Printf("Generated TOML:\n%s\n", string(output))
 
 	// Verify roundtrip by parsing again
 	var verified map[string]any

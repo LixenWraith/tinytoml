@@ -2,6 +2,7 @@ package tinytoml
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -164,6 +165,13 @@ func TestMarshal(t *testing.T) {
 			errormsg: "",
 		},
 		{
+			name:     "marshal empty arrays",
+			input:    map[string][]int{"name": []int{}},
+			expected: "name = []\n",
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
 			name: "marshal complex nested struct",
 			input: Complex{
 				Basic: Simple{
@@ -265,6 +273,9 @@ tag_list = ["a", "b", "c"]
 				fmt.Printf("got  bytes: %v\n", []byte(result))
 				fmt.Printf("want bytes: %v\n", []byte(test.expected))
 			*/
+
+			fmt.Println([]byte(test.expected))
+			fmt.Println([]byte(result))
 
 			if test.wantErr {
 				if err == nil {

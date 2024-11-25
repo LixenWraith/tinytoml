@@ -15,7 +15,6 @@
 // Limitations:
 //   - No support for table arrays
 //   - No support for hex, octal, binary, or exponential number formats
-//   - No support for plus sign in front of numbers
 //   - No multi-line keys or strings
 //   - No inline table declarations
 //   - No inline array declarations within tables

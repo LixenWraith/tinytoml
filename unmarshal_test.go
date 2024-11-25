@@ -29,6 +29,13 @@ func TestUnmarshal_SingleValue(t *testing.T) {
 			errormsg: "",
 		},
 		{
+			name:     "integer value",
+			input:    "count = +42",
+			want:     map[string]any{"count": int64(42)},
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
 			name:     "boolean value",
 			input:    "active = true",
 			want:     map[string]any{"active": true},
@@ -39,6 +46,13 @@ func TestUnmarshal_SingleValue(t *testing.T) {
 			name:     "float value",
 			input:    "price = -19.99",
 			want:     map[string]any{"price": -19.99},
+			wantErr:  false,
+			errormsg: "",
+		},
+		{
+			name:     "float value",
+			input:    "price = +19.99",
+			want:     map[string]any{"price": 19.99},
 			wantErr:  false,
 			errormsg: "",
 		},

@@ -31,7 +31,6 @@ go get github.com/LixenWraith/tinytoml
 - No support for:
   - Table arrays
   - Hex/octal/binary/exponential number formats
-  - Plus sign in front of numbers
   - Multi-line keys or strings
   - Inline table declarations
   - Inline array declarations within tables
@@ -40,7 +39,7 @@ go get github.com/LixenWraith/tinytoml
   - Unicode escape sequences
   - Key character escaping
   - Literal strings (single quotes)
-  - Comments are discarded during parsing
+  - Comments are discarded in parse, not supported in encode
 
 ### Implementation Choices
 

@@ -429,7 +429,7 @@ func Test_marshaller_marshalString(t *testing.T) {
 				return
 			}
 
-			if string(result) != test.expected {
+			if result != test.expected {
 				t.Errorf("-- %s failed: wrong result.\n- input: %v\n- want: %s\n- got: %s\n\n", fn, test.input, test.expected, result)
 				return
 			}

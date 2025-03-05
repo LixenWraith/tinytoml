@@ -167,4 +167,4 @@ marshalErr := tinytoml.Marshal(make(chan int))
 
 ## License
 
-MIT License - see LICENSE file
+BSD-3
